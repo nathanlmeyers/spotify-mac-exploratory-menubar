@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>SpotifyMenuBar</string>
+	<key>CFBundleDisplayName</key>
+	<string>Spotify Menu Bar</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- Menu-bar-only app: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Required for controlling Spotify via Apple events (ScriptingBridge). -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Spotify Menu Bar controls the Spotify desktop app to read the current track and manage playback (play/pause, skip, seek).</string>
+
+	<!-- Spotify Developer Client ID, injected from Secrets.xcconfig at build time. -->
+	<key>SpotifyClientID</key>
+	<string>$(SPOTIFY_CLIENT_ID)</string>
+
+	<!-- Custom URL scheme for the OAuth (PKCE) redirect: spotifymenubar://callback -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>spotifymenubar</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

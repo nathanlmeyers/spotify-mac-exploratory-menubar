@@ -1,0 +1,15 @@
+# Secrets (per-developer Spotify Client ID) — never commit
+Secrets.xcconfig
+
+# XcodeGen output (regenerate with `xcodegen generate`)
+*.xcodeproj/
+
+# Build artifacts
+build/
+DerivedData/
+.build/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
