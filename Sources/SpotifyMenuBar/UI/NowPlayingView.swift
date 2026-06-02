@@ -1,12 +1,37 @@
 import SwiftUI
 
-/// The popover contents: now-playing, scrubber, transport, and the curation buttons.
+/// The popover / hold-panel contents: now-playing, scrubber, transport, and curation.
+/// When `model.reviewState == .held`, it renders the discovery "judge" layout
+/// (Remove / Add / Skip) regardless of `mode`. `mode` only controls chrome:
+/// `.hold` adds a material card background for the borderless floating panel.
 struct NowPlayingView: View {
+    enum Mode { case standard, hold }
+    var mode: Mode = .standard
     @EnvironmentObject var model: AppModel
 
+    private var heldTrack: HeldTrack? {
+        if case .held(let h) = model.reviewState { return h }
+        return nil
+    }
+
     var body: some View {
+        content
+            .padding(14)
+            .frame(width: 340)
+            .background {
+                if mode == .hold {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(.regularMaterial)
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.tint.opacity(0.35)))
+                }
+            }
+    }
+
+    @ViewBuilder private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !model.hasClientID {
+            if let held = heldTrack {
+                heldPlayer(held)
+            } else if !model.hasClientID {
                 clientIDMissing
             } else if !model.isAuthorized {
                 loggedOut
@@ -19,16 +44,13 @@ struct NowPlayingView: View {
             Divider()
             footer
         }
-        .padding(14)
-        .frame(width: 340)
     }
 
-    // MARK: States
+    // MARK: Non-player states
 
     private var clientIDMissing: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Set up required", systemImage: "exclamationmark.triangle")
-                .font(.headline)
+            Label("Set up required", systemImage: "exclamationmark.triangle").font(.headline)
             Text("Add your Spotify **Client ID** to `Secrets.xcconfig` and rebuild. See the README.")
                 .font(.callout).foregroundStyle(.secondary)
         }
@@ -41,8 +63,7 @@ struct NowPlayingView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Button { model.login() } label: {
                 Label("Log in with Spotify", systemImage: "person.crop.circle")
-            }
-            .buttonStyle(.borderedProminent)
+            }.buttonStyle(.borderedProminent)
             if let err = model.auth.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
@@ -52,12 +73,10 @@ struct NowPlayingView: View {
     private var idleState: some View {
         VStack(alignment: .leading, spacing: 8) {
             if model.isSpotifyRunning {
-                Label("Nothing playing", systemImage: "pause.circle")
-                    .font(.headline).foregroundStyle(.secondary)
+                Label("Nothing playing", systemImage: "pause.circle").font(.headline).foregroundStyle(.secondary)
                 Text("Start a song in Spotify.").font(.callout).foregroundStyle(.secondary)
             } else {
-                Label("Spotify isn't running", systemImage: "bolt.horizontal.circle")
-                    .font(.headline).foregroundStyle(.secondary)
+                Label("Spotify isn't running", systemImage: "bolt.horizontal.circle").font(.headline).foregroundStyle(.secondary)
                 Button { model.openSpotify() } label: {
                     Label("Open Spotify", systemImage: "arrow.up.forward.app")
                 }
@@ -65,28 +84,51 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: Player
+    // MARK: Standard player
 
     private func player(_ np: NowPlaying) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                artwork(np.artworkURL)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(np.name.isEmpty ? "—" : np.name)
-                        .font(.headline).lineLimit(2)
-                    Text(np.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    Text(fromToLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-
+            trackHeader(np)
             Scrubber(np: np) { model.seek(to: $0) }
-
             transport(np)
-            curation
-            if let status = model.statusMessage {
-                Text(status).font(.caption).foregroundStyle(.secondary)
+            curationNormal
+            statusLine
+        }
+    }
+
+    // MARK: Held (discovery judge) player
+
+    private func heldPlayer(_ held: HeldTrack) -> some View {
+        // Use live playback if it's still the held track (it's paused there), else the snapshot.
+        let np = (model.nowPlaying?.uri == held.snapshot.uri ? model.nowPlaying : nil) ?? held.snapshot
+        return VStack(alignment: .leading, spacing: 12) {
+            Label("Held for review", systemImage: "pause.circle.fill")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+            trackHeader(np)
+            Scrubber(np: np) { model.seek(to: $0) }
+            HStack {
+                Spacer()
+                Button { model.togglePlayPause() } label: {
+                    Image(systemName: np.isPlaying ? "pause.fill" : "play.fill")
+                }.help("Play / pause to re-listen").buttonStyle(.borderless)
+                Spacer()
             }
+            curationHeld(held)
+            statusLine
+        }
+    }
+
+    // MARK: Shared pieces
+
+    private func trackHeader(_ np: NowPlaying) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            artwork(np.artworkURL)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(np.name.isEmpty ? "—" : np.name).font(.headline).lineLimit(2)
+                Text(np.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                Text(fromToLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -123,14 +165,13 @@ struct NowPlayingView: View {
             }.help(np.isPlaying ? "Pause" : "Play")
             Button { model.next() } label: { Image(systemName: "forward.fill") }.help("Next")
             Spacer()
-            // Spacer counterweight so play/pause stays centered.
-            Image(systemName: "shuffle").opacity(0)
+            Image(systemName: "shuffle").opacity(0)   // counterweight to keep play/pause centered
         }
         .buttonStyle(.borderless)
         .font(.body)
     }
 
-    private var curation: some View {
+    private var curationNormal: some View {
         HStack(spacing: 10) {
             Button { model.removeCurrentFromSource() } label: {
                 Label("Remove", systemImage: "minus.circle.fill").frame(maxWidth: .infinity)
@@ -150,14 +191,47 @@ struct NowPlayingView: View {
         .controlSize(.large)
     }
 
+    private func curationHeld(_ held: HeldTrack) -> some View {
+        HStack(spacing: 8) {
+            Button { model.heldRemove() } label: {
+                Label("Remove", systemImage: "minus.circle.fill").frame(maxWidth: .infinity)
+            }
+            .tint(.red)
+            .disabled(!held.canRemoveFromSource)
+            .help(held.canRemoveFromSource ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove"))
+
+            Button { model.heldAdd() } label: {
+                Label("Add", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+            }
+            .tint(.green)
+            .disabled(!held.canAdd)
+            .help(held.canAdd ? "Add to \(held.targetName ?? "target")" : (model.addDisabledReason ?? "Can't add"))
+
+            Button { model.heldSkip() } label: {
+                Label("Skip", systemImage: "forward.end.fill").frame(maxWidth: .infinity)
+            }
+            .tint(.secondary)
+            .help("Skip without adding or removing")
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        if let status = model.statusMessage {
+            Text(status).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var footer: some View {
         HStack {
-            if model.isAuthorized { Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.caption) }
+            if model.isAuthorized {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.caption)
+            }
             Spacer()
             Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
                 Image(systemName: "gearshape")
-            }.help("Settings")
-            .buttonStyle(.borderless)
+            }.help("Settings").buttonStyle(.borderless)
         }
     }
 }

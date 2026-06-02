@@ -61,6 +61,9 @@ On first run:
 - **Phase 1 (this build):** login, now-playing popover (art, scrubber, transport +
   shuffle), settings target picker (editable playlists only), Add/Remove with gray-out
   states, "move on add", duplicate-prevention, edge-content handling.
-- **Phase 2:** Discovery mode (computed precise-pause hold, alerts, auto-skip rules). The
-  settings are present now; the hold behavior lands next.
+- **Phase 2 (implemented):** Discovery mode — computed precise-pause hold (~300ms before a
+  track's natural end, with a crossfade/slip fallback), combinable alerts (auto-open
+  non-activating panel / icon pulse / sound), and auto-skip rules (already-in-target,
+  already-reviewed) with loop protection. Toggle it on in Settings. *Pending live
+  verification against the Web API (needs your Client ID).*
 - **Phase 3:** notarized GitHub distribution; see `ROADMAP.md`.

@@ -53,6 +53,7 @@ targets:
     sources:
       - path: Tests/SpotifyMenuBarTests
       - path: Sources/SpotifyMenuBar/Models/Models.swift
+      - path: Sources/SpotifyMenuBar/Discovery/DiscoveryLogic.swift
 
 schemes:
   SpotifyMenuBar:

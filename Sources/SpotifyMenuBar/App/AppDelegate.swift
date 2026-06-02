@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private lazy var holdPanel = HoldPanelController(model: model)
+    private var pulseTimer: Timer?
+    private var pulseOn = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Receive the spotifymenubar://callback URL (PKCE redirect).
@@ -50,6 +53,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.updateButtonTitle() }
         }.store(in: &cancellables)
 
+        // Discovery hold → fire the configured alerts (panel / badge / sound).
+        model.$reviewState
+            .map { state -> Bool in
+                if case .held = state { return true }
+                return false
+            }
+            .removeDuplicates()
+            .sink { [weak self] isHeld in
+                if isHeld { self?.presentHold() } else { self?.dismissHold() }
+            }
+            .store(in: &cancellables)
+
         model.start()
     }
 
@@ -64,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePopover() {
+        // During a discovery hold, the icon toggles the (non-activating) hold panel,
+        // not the popover — avoids double-surfacing the same judge UI.
+        if case .held = model.reviewState {
+            holdPanel.toggle(below: statusItem)
+            return
+        }
         guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(nil)
@@ -114,6 +135,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }
+
+    // MARK: Discovery hold alerts (combinable: panel / badge / sound)
+
+    private func presentHold() {
+        let s = model.settings
+        guard s.discoveryEnabled else { return }
+        if s.alertSound { NSSound(named: NSSound.Name("Tink"))?.play() }
+        if s.alertBadgeIcon { startPulse() }
+        if s.alertAutoOpenPanel {
+            if popover.isShown { popover.performClose(nil) }
+            holdPanel.present(below: statusItem)
+        }
+    }
+
+    private func dismissHold() {
+        stopPulse()
+        holdPanel.dismiss()
+    }
+
+    private func startPulse() {
+        stopPulse()
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pulseStep() }
+        }
+        pulseTimer?.tolerance = 0.2
+    }
+
+    private func pulseStep() {
+        guard let button = statusItem?.button else { return }
+        pulseOn.toggle()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.6
+            button.animator().contentTintColor = pulseOn ? .controlAccentColor : nil
+        }
+    }
+
+    private func stopPulse() {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        statusItem?.button?.contentTintColor = nil   // hard reset so it never sticks
+        pulseOn = false
+    }
 
     // MARK: URL callback
 

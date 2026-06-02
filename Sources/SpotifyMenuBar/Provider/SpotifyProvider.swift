@@ -18,6 +18,8 @@ final class SpotifyProvider: MusicProvider {
     var isShuffling: Bool { local.isShuffling }
     func nowPlaying() -> NowPlaying? { local.nowPlaying() }
     func playPause() { local.playPause() }
+    func pause() { local.pause() }
+    func play() { local.play() }
     func next() { local.next() }
     func previous() { local.previous() }
     func seek(to seconds: Double) { local.seek(to: seconds) }

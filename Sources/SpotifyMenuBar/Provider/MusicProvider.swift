@@ -12,6 +12,9 @@ protocol MusicProvider: AnyObject {
     var isShuffling: Bool { get }
     func nowPlaying() -> NowPlaying?
     func playPause()
+    /// Hard pause / play (not a toggle) — discovery mode needs deterministic pause.
+    func pause()
+    func play()
     func next()
     func previous()
     func seek(to seconds: Double)
