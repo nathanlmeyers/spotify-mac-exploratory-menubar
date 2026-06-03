@@ -30,7 +30,10 @@ final class DiscoveryEngine {
     }
 
     // Tunables
-    private let lead: TimeInterval = 0.30
+    // Pause this far before a track's natural end. Must comfortably exceed Apple-event
+    // latency + the 1s poll granularity, otherwise Spotify auto-advances before our pause
+    // lands and we end up holding the *next* track. 0.8s is the reliable floor in practice.
+    private let lead: TimeInterval = 0.8
     private let manualPauseSlack: TimeInterval = 1.5
     private let slipWindow: TimeInterval = 2.0
     private let minHoldableDuration: Double = 3.0
@@ -143,6 +146,7 @@ final class DiscoveryEngine {
         }
         if slip {
             // We missed the previous track's end; pause this new track at ~0:00 and judge it.
+            DebugLog.log("discovery: SLIP — prev track ended before pause landed; holding new track")
             provider.pause()
             enterHolding(provider.nowPlaying() ?? np)
             return
@@ -212,14 +216,24 @@ final class DiscoveryEngine {
 
     private func firePreciseHold() {
         guard case .watching = phase, let uri = activeURI, !heldOrJudgedURIs.contains(uri) else { return }
-        // Confirm we're still on the same track before pausing.
-        guard let live = provider.nowPlaying(), live.uri == uri else { return }
-        provider.pause()
-        enterHolding(provider.nowPlaying() ?? live)
+        guard let live = provider.nowPlaying() else { return }
+        if live.uri == uri {
+            DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")
+            provider.pause()
+            enterHolding(provider.nowPlaying() ?? live)
+        } else if live.kind == .track, !heldOrJudgedURIs.contains(live.uri) {
+            // Missed the pre-emptive pause (latency/crossfade) and the track already advanced.
+            // Pause the now-current track immediately rather than waiting for the next poll.
+            DebugLog.log("discovery: MISSED pre-empt; already advanced to \"\(live.name)\" — holding it")
+            provider.pause()
+            enterHolding(provider.nowPlaying() ?? live)
+        }
     }
 
     private func enterHolding(_ np: NowPlaying) {
         invalidateTimer()
+        activeURI = np.uri
+        DebugLog.log("discovery: HELD \"\(np.name)\" [\(np.uri)]")
         heldOrJudgedURIs.insert(np.uri)
         resetLoopProtection()                  // we found something worth reviewing
         setPhase(.holding(np.uri), publish: .held(HeldTrack(

@@ -198,6 +198,7 @@ final class AppModel: ObservableObject {
     func setTarget(_ playlist: Playlist) {
         settings.targetPlaylistId = playlist.id
         settings.targetPlaylistName = playlist.name
+        DebugLog.log("target set: \"\(playlist.name)\" id=\(playlist.id) owner=\(playlist.ownerId) collab=\(playlist.collaborative)")
         Task { await loadTargetMembership(force: true) }
     }
 
@@ -258,7 +259,7 @@ final class AppModel: ObservableObject {
                 setStatus("Moved to \(targetName)")
             }
         } catch {
-            setStatus("Add failed: \(error.localizedDescription)")
+            setStatus("Add failed: \(error.localizedDescription)", isError: true)
         }
     }
 
@@ -271,7 +272,7 @@ final class AppModel: ObservableObject {
             try await provider.removeTrack(uri: uri, fromPlaylist: src)
             setStatus("Removed from \(name)")
         } catch {
-            setStatus("Remove failed: \(error.localizedDescription)")
+            setStatus("Remove failed: \(error.localizedDescription)", isError: true)
         }
     }
 
@@ -285,9 +286,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setStatus(_ message: String) {
+    func setStatus(_ message: String, isError: Bool = false) {
         statusMessage = message
         statusClear?.cancel()
+        // Errors stay on screen (until the next action) so they can actually be read;
+        // success/info messages auto-clear.
+        guard !isError else { return }
         let work = DispatchWorkItem { [weak self] in self?.statusMessage = nil }
         statusClear = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)

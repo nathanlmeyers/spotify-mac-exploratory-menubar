@@ -88,33 +88,35 @@ final class SpotifyWebAPI {
     }
 
     /// All track URIs in a playlist (paginated) — used for duplicate detection.
+    /// Uses the Feb-2026 `/items` endpoint; the nested object was renamed `track` -> `item`
+    /// (we read either to stay robust).
     func playlistTrackURIs(id: String) async throws -> Set<String> {
         struct Page: Decodable {
             struct Item: Decodable {
-                let track: Track?
-                struct Track: Decodable { let uri: String? }
+                let item: Inner?
+                let track: Inner?
+                struct Inner: Decodable { let uri: String? }
+                var uri: String? { item?.uri ?? track?.uri }
             }
             let items: [Item]
             let next: String?
         }
         var uris = Set<String>()
-        var url: URL? = urlForPath("/playlists/\(id)/tracks",
-                                   query: [.init(name: "fields", value: "items(track(uri)),next"),
-                                           .init(name: "limit", value: "100")])
+        var url: URL? = urlForPath("/playlists/\(id)/items", query: [.init(name: "limit", value: "100")])
         while let current = url {
             let page: Page = try await getJSON(absolute: current)
-            for item in page.items { if let uri = item.track?.uri { uris.insert(uri) } }
+            for entry in page.items { if let uri = entry.uri { uris.insert(uri) } }
             url = page.next.flatMap { URL(string: $0) }
         }
         return uris
     }
 
     func addTrack(uri: String, toPlaylist id: String) async throws {
-        try await send("/playlists/\(id)/tracks", method: "POST", json: ["uris": [uri]])
+        try await send("/playlists/\(id)/items", method: "POST", json: ["uris": [uri]])
     }
 
     func removeTrack(uri: String, fromPlaylist id: String) async throws {
-        try await send("/playlists/\(id)/tracks", method: "DELETE", json: ["tracks": [["uri": uri]]])
+        try await send("/playlists/\(id)/items", method: "DELETE", json: ["items": [["uri": uri]]])
     }
 
     // MARK: - Request plumbing
@@ -134,7 +136,7 @@ final class SpotifyWebAPI {
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, resp) = try await URLSession.shared.data(for: req)
-        try Self.checkStatus(resp, data)
+        try throwIfError("GET \(url.path)", resp, data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
@@ -146,13 +148,24 @@ final class SpotifyWebAPI {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: json)
         let (data, resp) = try await URLSession.shared.data(for: req)
-        try Self.checkStatus(resp, data)
+        try throwIfError("\(method) \(path)", resp, data)
     }
 
-    private static func checkStatus(_ resp: URLResponse, _ data: Data) throws {
-        guard let http = resp as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+    private func throwIfError(_ label: String, _ resp: URLResponse, _ data: Data) throws {
+        guard let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
+        let body = String(data: data, encoding: .utf8) ?? ""
+        DebugLog.log("API \(label) -> HTTP \(http.statusCode): \(body)")
+        throw APIError.http(http.statusCode, Self.message(from: body))
+    }
+
+    /// Pull Spotify's `error.message` out of the JSON body for a readable status line.
+    private static func message(from body: String) -> String {
+        if let data = body.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let err = obj["error"] as? [String: Any],
+           let m = err["message"] as? String {
+            return m
         }
+        return body.isEmpty ? "(no details)" : body
     }
 }

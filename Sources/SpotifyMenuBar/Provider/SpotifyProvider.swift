@@ -31,12 +31,16 @@ final class SpotifyProvider: MusicProvider {
         if let id = cachedUserId { return id }
         let id = try await api.currentUserId()
         cachedUserId = id
+        DebugLog.log("me.id = \(id)")
         return id
     }
 
     func editablePlaylists() async throws -> [Playlist] {
         let me = try await currentUserId()
-        return try await api.allPlaylists().filter { $0.isEditable(byUserId: me) }
+        let all = try await api.allPlaylists()
+        let editable = all.filter { $0.isEditable(byUserId: me) }
+        DebugLog.log("playlists: total=\(all.count) editable=\(editable.count) me=\(me) sampleOwners=\(all.prefix(6).map { $0.ownerId })")
+        return editable
     }
 
     func currentSource() async throws -> SourceContext? {

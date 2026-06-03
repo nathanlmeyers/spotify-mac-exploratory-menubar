@@ -154,8 +154,10 @@ final class SpotifyAuth: ObservableObject {
             let access_token: String
             let refresh_token: String?
             let expires_in: Double
+            let scope: String?
         }
         let r = try JSONDecoder().decode(TokenResponse.self, from: data)
+        DebugLog.log("token granted scopes: \(r.scope ?? "<none>")")
         return TokenBundle(
             accessToken: r.access_token,
             refreshToken: r.refresh_token ?? "",
