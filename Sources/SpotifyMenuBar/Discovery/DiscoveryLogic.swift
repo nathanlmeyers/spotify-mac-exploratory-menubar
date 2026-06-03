@@ -28,6 +28,19 @@ enum DiscoveryLogic {
         return false
     }
 
+    /// True when a watched track advanced "naturally" (near its end / via crossfade) rather
+    /// than by a deliberate mid-song skip. Used to decide whether to reclaim a track that
+    /// auto-advanced before we could hold it. The window is wide (covers Spotify's max
+    /// crossfade) so every auto-advance qualifies; a far-from-end advance is a user skip.
+    /// Sub-`minHoldableDuration` interstitials are never reclaimed.
+    static func isNaturalAdvance(prevRemaining: Double,
+                                 prevDuration: Double,
+                                 crossfadeWindow: Double,
+                                 minHoldableDuration: Double) -> Bool {
+        guard prevDuration > minHoldableDuration else { return false }
+        return prevRemaining <= crossfadeWindow
+    }
+
     /// True when the playback source IS the playlist we curate into. Discovery must not
     /// run here: every track is trivially "already in target", so auto-skip-and-remove
     /// would walk the playlist deleting it. Nil ids never match.

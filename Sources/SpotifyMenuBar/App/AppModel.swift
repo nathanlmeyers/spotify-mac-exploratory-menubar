@@ -194,8 +194,8 @@ final class AppModel: ObservableObject {
     // MARK: Transport
 
     func togglePlayPause() { provider.playPause(); refreshSoon() }
-    func next() { provider.next(); refreshSoon() }
-    func previous() { provider.previous(); refreshSoon() }
+    func next() { discovery.noteUserTransport(); provider.next(); refreshSoon() }
+    func previous() { discovery.noteUserTransport(); provider.previous(); refreshSoon() }
     func toggleShuffle() { provider.setShuffle(!(nowPlaying?.isShuffling ?? false)); refreshSoon() }
     func seek(to seconds: Double) { provider.seek(to: seconds); refreshSoon() }
     func openSpotify() { provider.activateApp() }

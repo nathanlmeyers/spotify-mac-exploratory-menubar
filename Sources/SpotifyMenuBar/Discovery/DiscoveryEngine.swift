@@ -24,6 +24,7 @@ final class DiscoveryEngine {
     private enum Phase: Equatable {
         case idle
         case watching
+        case reclaiming(expectedA: String, attempts: Int)  // pausing + previous()-ing back to A
         case holding(String)   // held URI
         case acting            // advancing via next(); waiting for the new track
         case exhausted
@@ -31,13 +32,16 @@ final class DiscoveryEngine {
 
     // Tunables
     // Pause this far before a track's natural end. Must comfortably exceed Apple-event
-    // latency + the 1s poll granularity, otherwise Spotify auto-advances before our pause
-    // lands and we end up holding the *next* track. 0.8s is the reliable floor in practice.
-    private let lead: TimeInterval = 0.8
+    // latency + the 1s poll granularity; if our pause lands late, reclaim recovers the track.
+    private let lead: TimeInterval = 1.3
     private let manualPauseSlack: TimeInterval = 1.5
-    private let slipWindow: TimeInterval = 2.0
+    // A watched track that advances with <= this much left ended "naturally" (covers
+    // Spotify's 12s max crossfade + slop) and is reclaimed; a far-from-end advance is a
+    // deliberate user skip and is left alone.
+    private let crossfadeWindow: Double = 13.0
     private let minHoldableDuration: Double = 3.0
     private let maxConsecutiveAutoSkips = 25
+    private let maxReclaimAttempts = 2
 
     // Dependencies
     private let provider: SpotifyProvider
@@ -62,9 +66,13 @@ final class DiscoveryEngine {
     private var consecutiveAutoSkips = 0
     private var actingTicks = 0
     private var lastPublished: ReviewState = .inactive
-    // Set when the active track was curated from the normal popover: don't slip-hold its
+    private var lastSource: SourceContext = .none
+    // Set when the active track was curated from the normal popover: don't reclaim its
     // successor when it ends (the user already made a call on it). Cleared on track change.
-    private var suppressSlipForActive = false
+    private var suppressReclaimForActive = false
+    // One-shot: set when the user drives transport from the app (Next/Previous) so the
+    // resulting advance isn't reclaimed. Consumed on the next observed track change.
+    private var suppressReclaimOnce = false
 
     init(provider: SpotifyProvider,
          settings: Settings,
@@ -98,17 +106,21 @@ final class DiscoveryEngine {
                                          targetPlaylistId: settings.targetPlaylistId) {
             goIdle(); return
         }
+        lastSource = source
 
         let uri = np.uri
         switch phase {
+        case .reclaiming(let expectedA, let attempts):
+            resolveReclaim(np, source, expectedA: expectedA, attempts: attempts)
+
         case .holding(let heldURI):
-            if uri != heldURI { evaluateNewCandidate(np, source, slip: false) }
+            if uri != heldURI { evaluateNewCandidate(np, source) }
             // else: stay held; ignore position drift.
 
         case .acting:
             if uri != activeURI {
                 actingTicks = 0
-                evaluateNewCandidate(np, source, slip: false)
+                evaluateNewCandidate(np, source)
             } else {
                 actingTicks += 1
                 if actingTicks == 2 { provider.next() }          // advance didn't take — retry once
@@ -118,31 +130,83 @@ final class DiscoveryEngine {
         case .exhausted:
             if !visitedThisSweep.contains(uri) {
                 resetLoopProtection()
-                evaluateNewCandidate(np, source, slip: false)
+                evaluateNewCandidate(np, source)
             }
 
         case .idle, .watching:
             if uri != activeURI {
-                evaluateNewCandidate(np, source, slip: wasWatchingNearEnd() && !suppressSlipForActive)
+                let suppressed = suppressReclaimOnce
+                suppressReclaimOnce = false
+                if !suppressed && shouldReclaim(newURI: uri) {
+                    beginReclaim(expectedA: activeURI!, source: source)
+                } else {
+                    evaluateNewCandidate(np, source)
+                }
             } else {
                 updateWatching(np)
             }
         }
     }
 
-    /// Whether the track we were watching was about to end when the URI changed —
-    /// i.e. Spotify auto-advanced (crossfade/gapless) before our pre-emptive pause landed.
-    private func wasWatchingNearEnd() -> Bool {
-        guard case .watching = phase, let prev = lastNP, prev.durationSeconds > minHoldableDuration else { return false }
-        return (prev.durationSeconds - prev.positionSeconds) <= (lead + slipWindow)
+    /// Whether a watched, unjudged track just auto-advanced (so we should reclaim it rather
+    /// than accept the skip). False for deliberate mid-song skips and judged tracks.
+    private func shouldReclaim(newURI: String) -> Bool {
+        guard case .watching = phase, let a = activeURI, newURI != a,
+              !heldOrJudgedURIs.contains(a), !suppressReclaimForActive,
+              let prev = lastNP, prev.uri == a else { return false }
+        return DiscoveryLogic.isNaturalAdvance(
+            prevRemaining: prev.durationSeconds - prev.positionSeconds,
+            prevDuration: prev.durationSeconds,
+            crossfadeWindow: crossfadeWindow,
+            minHoldableDuration: minHoldableDuration)
+    }
+
+    // MARK: - Reclaim (recover a track that auto-advanced before we could hold it)
+
+    /// Pause whatever's playing and step back toward the track that just auto-advanced.
+    /// Resolution happens on the next tick (previousTrack is an async Apple event).
+    private func beginReclaim(expectedA: String, source: SourceContext) {
+        invalidateTimer()
+        DebugLog.log("discovery: RECLAIM — \"\(expectedA)\" auto-advanced; pausing and stepping back")
+        provider.pause()
+        provider.previous()
+        setPhase(.reclaiming(expectedA: expectedA, attempts: 0), publish: .watching)
+    }
+
+    private func resolveReclaim(_ np: NowPlaying, _ source: SourceContext, expectedA: String, attempts: Int) {
+        if np.uri == expectedA {
+            // Landed back on the track to review. Pause it and hold (or auto-skip if it qualifies).
+            provider.pause()
+            activeURI = expectedA
+            if let kind = autoSkipKind(np, source) { performAutoSkip(np, source, kind: kind) }
+            else { enterHolding(provider.nowPlaying() ?? np) }
+            return
+        }
+        if attempts < maxReclaimAttempts {
+            // Still on the successor — previousTrack restarts the current track when it's
+            // >~3s in, so it's now near 0:00; another previous() should land on A.
+            provider.pause()
+            provider.previous()
+            setPhase(.reclaiming(expectedA: expectedA, attempts: attempts + 1), publish: .watching)
+            return
+        }
+        // Gave up reclaiming A. Fall back to the track we're on — but never re-hold a seen one.
+        DebugLog.log("discovery: RECLAIM failed for \"\(expectedA)\"; falling back to \"\(np.uri)\"")
+        if heldOrJudgedURIs.contains(np.uri) {
+            evaluateNewCandidate(np, source)
+        } else {
+            provider.pause()
+            activeURI = np.uri
+            enterHolding(provider.nowPlaying() ?? np)
+        }
     }
 
     // MARK: - Candidate evaluation
 
-    private func evaluateNewCandidate(_ np: NowPlaying, _ source: SourceContext, slip: Bool) {
+    private func evaluateNewCandidate(_ np: NowPlaying, _ source: SourceContext) {
         invalidateTimer()
         activeURI = np.uri
-        suppressSlipForActive = false   // the slip decision for this transition is already made
+        suppressReclaimForActive = false   // the reclaim decision for this transition is already made
 
         // Already held/judged this URI: never re-prompt (guards backward-scrub / repeat).
         if heldOrJudgedURIs.contains(np.uri) {
@@ -152,13 +216,6 @@ final class DiscoveryEngine {
         // Auto-skip rules (need source/target data — effectively login-gated).
         if let kind = autoSkipKind(np, source) {
             performAutoSkip(np, source, kind: kind)
-            return
-        }
-        if slip {
-            // We missed the previous track's end; pause this new track at ~0:00 and judge it.
-            DebugLog.log("discovery: SLIP — prev track ended before pause landed; holding new track")
-            provider.pause()
-            enterHolding(provider.nowPlaying() ?? np)
             return
         }
         setPhase(.watching, publish: .watching)
@@ -215,6 +272,15 @@ final class DiscoveryEngine {
             if remaining > lead + manualPauseSlack { invalidateTimer() }
             return
         }
+        // Poll-driven pause: if this fresh poll already shows we're within the lead window,
+        // hold now rather than trusting the scheduled timer to fire on time.
+        if np.durationSeconds > minHoldableDuration,
+           (np.durationSeconds - np.positionSeconds) <= lead {
+            invalidateTimer()
+            provider.pause()
+            enterHolding(provider.nowPlaying() ?? np)
+            return
+        }
         armPrecisePause(np)   // re-arm against fresh polled position (handles seek + drift)
     }
 
@@ -236,12 +302,10 @@ final class DiscoveryEngine {
             DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")
             provider.pause()
             enterHolding(provider.nowPlaying() ?? live)
-        } else if live.kind == .track, !heldOrJudgedURIs.contains(live.uri) {
+        } else {
             // Missed the pre-emptive pause (latency/crossfade) and the track already advanced.
-            // Pause the now-current track immediately rather than waiting for the next poll.
-            DebugLog.log("discovery: MISSED pre-empt; already advanced to \"\(live.name)\" — holding it")
-            provider.pause()
-            enterHolding(provider.nowPlaying() ?? live)
+            // Reclaim the track we were watching rather than holding/skipping its successor.
+            beginReclaim(expectedA: uri, source: lastSource)
         }
     }
 
@@ -276,16 +340,22 @@ final class DiscoveryEngine {
     }
 
     /// The user curated the *currently playing* track from the normal popover (not the held
-    /// panel). Mark it judged so discovery neither holds it at its natural end nor slip-holds
+    /// panel). Mark it judged so discovery neither holds it at its natural end nor reclaims
     /// the track that plays next — playback just advances on its own.
     func noteManualReview(uri: String, sourceId: String?) {
         guard settings.discoveryEnabled else { return }
         heldOrJudgedURIs.insert(uri)
         if let sid = sourceId { history.markReviewed(sourceId: sid, uri: uri) }
         if activeURI == uri {
-            invalidateTimer()              // cancel any armed precise-pause for this track
-            suppressSlipForActive = true   // and don't slip-hold whatever plays next
+            invalidateTimer()                // cancel any armed precise-pause for this track
+            suppressReclaimForActive = true  // and don't reclaim whatever plays next
         }
+    }
+
+    /// The user drove transport from the app (Next/Previous). Don't reclaim the resulting
+    /// advance — it's deliberate. Consumed on the next observed track change.
+    func noteUserTransport() {
+        suppressReclaimOnce = true
     }
 
     /// Full reset (logout, discovery disabled, source change).
@@ -303,7 +373,8 @@ final class DiscoveryEngine {
         invalidateTimer()
         activeURI = nil
         actingTicks = 0
-        suppressSlipForActive = false
+        suppressReclaimForActive = false
+        suppressReclaimOnce = false
         setPhase(.idle, publish: .inactive)
     }
 

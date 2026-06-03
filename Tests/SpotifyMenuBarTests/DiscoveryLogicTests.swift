@@ -111,4 +111,30 @@ final class DiscoveryLogicTests: XCTestCase {
             sourcePlaylistId: nil, targetPlaylistId: "tgt",
             sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: false))
     }
+
+    // MARK: Natural-advance gate (reclaim a track that auto-advanced before we held it)
+
+    func testNaturalAdvanceWhenNearEnd() {
+        // 2s left on a 200s track, within the 13s crossfade window -> auto-advance.
+        XCTAssertTrue(DiscoveryLogic.isNaturalAdvance(
+            prevRemaining: 2, prevDuration: 200, crossfadeWindow: 13, minHoldableDuration: 3))
+    }
+
+    func testNaturalAdvanceCoversMaxCrossfade() {
+        // 12s left (Spotify's max crossfade) still counts as an auto-advance.
+        XCTAssertTrue(DiscoveryLogic.isNaturalAdvance(
+            prevRemaining: 12, prevDuration: 200, crossfadeWindow: 13, minHoldableDuration: 3))
+    }
+
+    func testNotNaturalAdvanceWhenFarFromEnd() {
+        // 60s left -> deliberate mid-song skip; don't reclaim.
+        XCTAssertFalse(DiscoveryLogic.isNaturalAdvance(
+            prevRemaining: 60, prevDuration: 200, crossfadeWindow: 13, minHoldableDuration: 3))
+    }
+
+    func testNotNaturalAdvanceForShortInterstitial() {
+        // A sub-minHoldableDuration item is never reclaimed even if "near end".
+        XCTAssertFalse(DiscoveryLogic.isNaturalAdvance(
+            prevRemaining: 0.5, prevDuration: 2, crossfadeWindow: 13, minHoldableDuration: 3))
+    }
 }
