@@ -11,6 +11,8 @@ final class Settings: ObservableObject {
     @Published var targetPlaylistId: String? { didSet { d.set(targetPlaylistId, forKey: K.targetId) } }
     @Published var targetPlaylistName: String? { didSet { d.set(targetPlaylistName, forKey: K.targetName) } }
     @Published var removeFromSourceOnAdd: Bool { didSet { d.set(removeFromSourceOnAdd, forKey: K.moveOnAdd) } }
+    @Published var skipToNextAfterRemove: Bool { didSet { d.set(skipToNextAfterRemove, forKey: K.skipAfterRemove) } }
+    @Published var skipToNextAfterAdd: Bool { didSet { d.set(skipToNextAfterAdd, forKey: K.skipAfterAdd) } }
 
     // MARK: Menu bar
     @Published var showTrackTitleInMenuBar: Bool { didSet { d.set(showTrackTitleInMenuBar, forKey: K.showTitle) } }
@@ -23,6 +25,7 @@ final class Settings: ObservableObject {
     @Published var skipIfInTarget: Bool { didSet { d.set(skipIfInTarget, forKey: K.skipInTarget) } }
     @Published var skipInTargetAlsoRemove: Bool { didSet { d.set(skipInTargetAlsoRemove, forKey: K.skipInTargetRemove) } }
     @Published var skipAlreadyReviewed: Bool { didSet { d.set(skipAlreadyReviewed, forKey: K.skipReviewed) } }
+    @Published var keepHeldPanelOpen: Bool { didSet { d.set(keepHeldPanelOpen, forKey: K.keepHeldOpen) } }
 
     // MARK: System
     @Published var launchAtLogin: Bool {
@@ -33,6 +36,8 @@ final class Settings: ObservableObject {
         targetPlaylistId = d.string(forKey: K.targetId)
         targetPlaylistName = d.string(forKey: K.targetName)
         removeFromSourceOnAdd = d.bool(forKey: K.moveOnAdd)
+        skipToNextAfterRemove = (d.object(forKey: K.skipAfterRemove) as? Bool) ?? true   // default ON
+        skipToNextAfterAdd = d.bool(forKey: K.skipAfterAdd)                              // default OFF
         showTrackTitleInMenuBar = d.bool(forKey: K.showTitle)
 
         discoveryEnabled = d.bool(forKey: K.discovery)
@@ -42,6 +47,7 @@ final class Settings: ObservableObject {
         skipIfInTarget = d.bool(forKey: K.skipInTarget)
         skipInTargetAlsoRemove = d.bool(forKey: K.skipInTargetRemove)
         skipAlreadyReviewed = d.bool(forKey: K.skipReviewed)
+        keepHeldPanelOpen = (d.object(forKey: K.keepHeldOpen) as? Bool) ?? true          // default ON
 
         launchAtLogin = (d.object(forKey: K.launchAtLogin) as? Bool) ?? true      // default ON (intent)
     }
@@ -68,6 +74,8 @@ final class Settings: ObservableObject {
         static let targetId = "targetPlaylistId"
         static let targetName = "targetPlaylistName"
         static let moveOnAdd = "removeFromSourceOnAdd"
+        static let skipAfterRemove = "skipToNextAfterRemove"
+        static let skipAfterAdd = "skipToNextAfterAdd"
         static let showTitle = "showTrackTitleInMenuBar"
         static let discovery = "discoveryEnabled"
         static let alertPanel = "alertAutoOpenPanel"
@@ -76,6 +84,7 @@ final class Settings: ObservableObject {
         static let skipInTarget = "skipIfInTarget"
         static let skipInTargetRemove = "skipInTargetAlsoRemove"
         static let skipReviewed = "skipAlreadyReviewed"
+        static let keepHeldOpen = "keepHeldPanelOpen"
         static let launchAtLogin = "launchAtLogin"
     }
 }

@@ -29,6 +29,7 @@ struct NowPlayingView: View {
 
     @ViewBuilder private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
+            topBar
             if let held = heldTrack {
                 heldPlayer(held)
             } else if !model.hasClientID {
@@ -40,9 +41,16 @@ struct NowPlayingView: View {
             } else {
                 idleState
             }
+        }
+    }
 
-            Divider()
-            footer
+    /// Settings gear in the top-right corner; shown in every state.
+    private var topBar: some View {
+        HStack {
+            Spacer()
+            Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
+                Image(systemName: "gearshape")
+            }.help("Settings").buttonStyle(.borderless)
         }
     }
 
@@ -208,10 +216,10 @@ struct NowPlayingView: View {
             .help(held.canAdd ? "Add to \(held.targetName ?? "target")" : (model.addDisabledReason ?? "Can't add"))
 
             Button { model.heldSkip() } label: {
-                Label("Skip", systemImage: "forward.end.fill").frame(maxWidth: .infinity)
+                Label("Next", systemImage: "forward.fill").frame(maxWidth: .infinity)
             }
             .tint(.secondary)
-            .help("Skip without adding or removing")
+            .help("Skip to the next track without adding or removing")
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
@@ -223,17 +231,6 @@ struct NowPlayingView: View {
         }
     }
 
-    private var footer: some View {
-        HStack {
-            if model.isAuthorized {
-                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.caption)
-            }
-            Spacer()
-            Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
-                Image(systemName: "gearshape")
-            }.help("Settings").buttonStyle(.borderless)
-        }
-    }
 }
 
 /// A seek slider that follows playback unless the user is actively dragging it.

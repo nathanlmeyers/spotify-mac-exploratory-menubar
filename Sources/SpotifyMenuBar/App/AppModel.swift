@@ -220,13 +220,19 @@ final class AppModel: ObservableObject {
     func addCurrentToTarget() {
         guard let np = nowPlaying else { return }
         let sourceCtx = source
-        Task { await performAdd(uri: np.uri, sourceCtx: sourceCtx) }
+        Task {
+            let ok = await performAdd(uri: np.uri, sourceCtx: sourceCtx)
+            if ok, settings.skipToNextAfterAdd { next() }
+        }
     }
 
     func removeCurrentFromSource() {
         guard let np = nowPlaying, source.isEditablePlaylist, source.playlistId != nil else { return }
         let sourceCtx = source
-        Task { await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx) }
+        Task {
+            let ok = await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx)
+            if ok, settings.skipToNextAfterRemove { next() }
+        }
     }
 
     // MARK: Discovery held actions
@@ -254,8 +260,10 @@ final class AppModel: ObservableObject {
 
     // MARK: Curation core (URI-explicit; shared by buttons + held actions)
 
-    private func performAdd(uri: String, sourceCtx: SourceContext) async {
-        guard let target = settings.targetPlaylistId else { return }
+    /// Returns true when the track ended up in (or was already in) the target.
+    @discardableResult
+    private func performAdd(uri: String, sourceCtx: SourceContext) async -> Bool {
+        guard let target = settings.targetPlaylistId else { return false }
         let targetName = settings.targetPlaylistName ?? "target"
         isBusy = true
         defer { isBusy = false }
@@ -273,21 +281,27 @@ final class AppModel: ObservableObject {
                 try await provider.removeTrack(uri: uri, fromPlaylist: src)
                 setStatus("Moved to \(targetName)")
             }
+            return true
         } catch {
             setStatus("Add failed: \(error.localizedDescription)", isError: true)
+            return false
         }
     }
 
-    private func performRemoveFromSource(uri: String, sourceCtx: SourceContext) async {
-        guard sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId else { return }
+    /// Returns true when the track was removed from the source playlist.
+    @discardableResult
+    private func performRemoveFromSource(uri: String, sourceCtx: SourceContext) async -> Bool {
+        guard sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId else { return false }
         let name = sourceCtx.playlistName ?? "playlist"
         isBusy = true
         defer { isBusy = false }
         do {
             try await provider.removeTrack(uri: uri, fromPlaylist: src)
             setStatus("Removed from \(name)")
+            return true
         } catch {
             setStatus("Remove failed: \(error.localizedDescription)", isError: true)
+            return false
         }
     }
 

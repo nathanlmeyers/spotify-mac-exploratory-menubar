@@ -63,6 +63,11 @@ struct SettingsView: View {
 
             Toggle("Also remove from the source playlist when I add (move)", isOn: $settings.removeFromSourceOnAdd)
                 .help("When you press Plus, also remove the song from the playlist you're listening to — if that playlist is editable.")
+
+            Toggle("Skip to the next track after I remove", isOn: $settings.skipToNextAfterRemove)
+                .help("When you press Remove, also advance to the next song instead of finishing the one you just removed.")
+            Toggle("Skip to the next track after I add", isOn: $settings.skipToNextAfterAdd)
+                .help("When you press Add, also advance to the next song. Off by default so you can keep enjoying a track you like.")
         }
     }
 
@@ -103,6 +108,8 @@ struct SettingsView: View {
                 Toggle("Auto-open the panel", isOn: $settings.alertAutoOpenPanel)
                 Toggle("Shade the menu bar icon when a song is held", isOn: $settings.alertBadgeIcon)
                 Toggle("Play a sound", isOn: $settings.alertSound)
+                Toggle("Keep the review panel open until I choose", isOn: $settings.keepHeldPanelOpen)
+                    .help("While a song is held, don't close the panel when you click elsewhere — only Add, Remove, or Next will dismiss it.")
             }
             .disabled(!settings.discoveryEnabled)
 
