@@ -53,8 +53,16 @@ final class SpotifyWebAPI {
         return results
     }
 
-    /// What the current track is playing from. Returns nil if nothing is playing.
-    func currentContext() async throws -> (contextURI: String?, contextType: String?)? {
+    struct CurrentlyPlaying {
+        let contextURI: String?
+        let contextType: String?
+        let artistNames: [String]   // all credited artists (incl. features)
+        let trackURI: String?
+    }
+
+    /// The currently-playing item: its playback context + the full artist list.
+    /// Returns nil if nothing is playing.
+    func currentContext() async throws -> CurrentlyPlaying? {
         let token = try await auth.validAccessToken()
         var req = URLRequest(url: urlForPath("/me/player/currently-playing"))
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -66,10 +74,18 @@ final class SpotifyWebAPI {
         }
         struct Resp: Decodable {
             struct Context: Decodable { let uri: String?; let type: String? }
+            struct Item: Decodable {
+                let uri: String?
+                let artists: [Artist]?
+                struct Artist: Decodable { let name: String? }
+            }
             let context: Context?
+            let item: Item?
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
-        return (r.context?.uri, r.context?.type)
+        let names = (r.item?.artists ?? []).compactMap { $0.name }.filter { !$0.isEmpty }
+        return CurrentlyPlaying(contextURI: r.context?.uri, contextType: r.context?.type,
+                                artistNames: names, trackURI: r.item?.uri)
     }
 
     func playlistInfo(id: String) async throws -> Playlist {

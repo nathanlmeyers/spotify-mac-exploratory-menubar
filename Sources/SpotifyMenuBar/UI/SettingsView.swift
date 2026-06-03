@@ -96,7 +96,7 @@ struct SettingsView: View {
             Group {
                 Text("Alert me when a song is held:").font(.caption).foregroundStyle(.secondary)
                 Toggle("Auto-open the panel", isOn: $settings.alertAutoOpenPanel)
-                Toggle("Pulse / badge the menu bar icon", isOn: $settings.alertBadgeIcon)
+                Toggle("Shade the menu bar icon when a song is held", isOn: $settings.alertBadgeIcon)
                 Toggle("Play a sound", isOn: $settings.alertSound)
             }
             .disabled(!settings.discoveryEnabled)

@@ -19,7 +19,9 @@ final class AppModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var isBusy = false
     @Published var reviewState: ReviewState = .inactive
+    @Published var displayArtists: [String] = []   // full artist list from the Web API (incl. features)
 
+    private var displayArtistsURI: String?
     private var discovery: DiscoveryEngine!
     private var pollTimer: Timer?
     private var lastURI: String?
@@ -101,14 +103,27 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSource() async {
-        guard isAuthorized else { source = .none; return }
-        do { source = (try await provider.currentSource()) ?? .none }
-        catch { source = .none }
+        guard isAuthorized else { source = .none; displayArtists = []; displayArtistsURI = nil; return }
+        do {
+            let result = try await provider.currentSourceAndArtists()
+            source = result.source
+            displayArtists = result.artists
+            displayArtistsURI = result.trackURI
+        } catch { source = .none }
         // A genuine source-playlist change starts a fresh discovery sweep.
         if let id = source.playlistId, id != lastSourceId {
             lastSourceId = id
             discovery.reset()
         }
+    }
+
+    /// Artist line for display: the full Web API artist list (incl. features) when it
+    /// matches the current track, else the local primary artist.
+    func artistText(for np: NowPlaying) -> String {
+        if np.uri == displayArtistsURI, !displayArtists.isEmpty {
+            return displayArtists.joined(separator: ", ")
+        }
+        return np.artist
     }
 
     private func loadTargetMembership(force: Bool) async {

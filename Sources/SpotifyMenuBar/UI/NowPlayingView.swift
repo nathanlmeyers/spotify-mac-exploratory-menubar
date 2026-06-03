@@ -125,7 +125,7 @@ struct NowPlayingView: View {
             artwork(np.artworkURL)
             VStack(alignment: .leading, spacing: 3) {
                 Text(np.name.isEmpty ? "—" : np.name).font(.headline).lineLimit(2)
-                Text(np.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.artistText(for: np)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 Text(fromToLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)

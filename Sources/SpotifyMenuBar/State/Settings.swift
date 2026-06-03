@@ -37,7 +37,7 @@ final class Settings: ObservableObject {
 
         discoveryEnabled = d.bool(forKey: K.discovery)
         alertAutoOpenPanel = (d.object(forKey: K.alertPanel) as? Bool) ?? true   // default ON
-        alertBadgeIcon = d.bool(forKey: K.alertBadge)
+        alertBadgeIcon = (d.object(forKey: K.alertBadge) as? Bool) ?? true       // default ON (shade icon)
         alertSound = d.bool(forKey: K.alertSound)
         skipIfInTarget = d.bool(forKey: K.skipInTarget)
         skipInTargetAlsoRemove = d.bool(forKey: K.skipInTargetRemove)

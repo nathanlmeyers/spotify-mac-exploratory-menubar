@@ -71,7 +71,7 @@ final class HoldPanelController {
         let buttonInWindow = button.convert(button.bounds, to: nil)
         let onScreen = itemWindow.convertToScreen(buttonInWindow)
         let size = panel.frame.size
-        let gap: CGFloat = 6
+        let gap: CGFloat = 4
         var x = onScreen.midX - size.width / 2
         let y = onScreen.minY - gap - size.height
         if let visible = (itemWindow.screen ?? NSScreen.main)?.visibleFrame {

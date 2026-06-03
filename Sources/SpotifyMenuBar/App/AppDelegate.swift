@@ -10,12 +10,11 @@ extension Notification.Name {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel()
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
     private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    // One borderless panel serves both the manual click and the discovery hold; it hugs
+    // the menu bar (no arrow/gap like NSPopover) and renders standard vs held from reviewState.
     private lazy var holdPanel = HoldPanelController(model: model)
-    private var pulseTimer: Timer?
-    private var pulseOn = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Receive the spotifymenubar://callback URL (PKCE redirect).
@@ -30,18 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "music.note.list", accessibilityDescription: "Spotify Menu Bar")
-            button.image?.isTemplate = true
+            button.image = Self.makeMenuBarIcon()
             button.imagePosition = .imageLeading
             button.action = #selector(statusItemClicked)
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(
-            rootView: NowPlayingView().environmentObject(model)
-        )
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings), name: .openSettings, object: nil
@@ -74,23 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showContextMenu()
         } else {
-            togglePopover()
+            toggleMainPanel()
         }
     }
 
-    private func togglePopover() {
-        // During a discovery hold, the icon toggles the (non-activating) hold panel,
-        // not the popover — avoids double-surfacing the same judge UI.
-        if case .held = model.reviewState {
-            holdPanel.toggle(below: statusItem)
-            return
-        }
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
+    private func toggleMainPanel() {
+        if holdPanel.isVisible {
+            holdPanel.dismiss()
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            holdPanel.present(below: statusItem)
             Task {
                 await model.refreshSource()
                 if model.isAuthorized && model.editablePlaylists.isEmpty { await model.loadPlaylists() }
@@ -105,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Quit Spotify Menu Bar", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
-        statusItem.menu = nil   // restore left-click popover behavior
+        statusItem.menu = nil   // restore left-click panel behavior
     }
 
     private func updateButtonTitle() {
@@ -142,40 +127,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = model.settings
         guard s.discoveryEnabled else { return }
         if s.alertSound { NSSound(named: NSSound.Name("Tink"))?.play() }
-        if s.alertBadgeIcon { startPulse() }
-        if s.alertAutoOpenPanel {
-            if popover.isShown { popover.performClose(nil) }
-            holdPanel.present(below: statusItem)
-        }
+        if s.alertBadgeIcon { shadeIcon(held: true) }
+        if s.alertAutoOpenPanel { holdPanel.present(below: statusItem) }
     }
 
     private func dismissHold() {
-        stopPulse()
+        shadeIcon(held: false)
         holdPanel.dismiss()
     }
 
-    private func startPulse() {
-        stopPulse()
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pulseStep() }
-        }
-        pulseTimer?.tolerance = 0.2
+    // MARK: Menu bar icon
+
+    /// Discovery-themed icon: magnifying glass + music note as a single template image.
+    /// `emphasized` draws it heavier for the "decision needed" (held) state.
+    static func makeMenuBarIcon(emphasized: Bool = false) -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: emphasized ? .bold : .regular)
+        let glass = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Spotify Menu Bar")?
+            .withSymbolConfiguration(config) ?? NSImage()
+        let note = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) ?? NSImage()
+        let spacing: CGFloat = 1
+        let height = max(glass.size.height, note.size.height)
+        let width = glass.size.width + spacing + note.size.width
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        glass.draw(at: NSPoint(x: 0, y: (height - glass.size.height) / 2),
+                   from: .zero, operation: .sourceOver, fraction: 1)
+        note.draw(at: NSPoint(x: glass.size.width + spacing, y: (height - note.size.height) / 2),
+                  from: .zero, operation: .sourceOver, fraction: 1)
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
     }
 
-    private func pulseStep() {
+    /// Shade the icon solid/high-contrast while a song is held; revert when resolved.
+    private func shadeIcon(held: Bool) {
         guard let button = statusItem?.button else { return }
-        pulseOn.toggle()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.6
-            button.animator().contentTintColor = pulseOn ? .controlAccentColor : nil
-        }
-    }
-
-    private func stopPulse() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
-        statusItem?.button?.contentTintColor = nil   // hard reset so it never sticks
-        pulseOn = false
+        button.image = Self.makeMenuBarIcon(emphasized: held)
+        button.contentTintColor = held ? .labelColor : nil
     }
 
     // MARK: URL callback

@@ -44,17 +44,23 @@ final class SpotifyProvider: MusicProvider {
     }
 
     func currentSource() async throws -> SourceContext? {
-        guard let ctx = try await api.currentContext() else { return .none }
-        guard ctx.contextType == "playlist", let uri = ctx.contextURI else {
-            return .none // album / artist / liked songs / queue — not an editable playlist
+        try await currentSourceAndArtists().source
+    }
+
+    /// Source context plus the currently-playing artist list (one API call).
+    func currentSourceAndArtists() async throws -> (source: SourceContext, artists: [String], trackURI: String?) {
+        guard let cp = try await api.currentContext() else { return (.none, [], nil) }
+        guard cp.contextType == "playlist", let uri = cp.contextURI else {
+            return (.none, cp.artistNames, cp.trackURI) // album / artist / liked / queue
         }
         let id = uri.components(separatedBy: ":").last ?? ""
-        guard !id.isEmpty else { return .none }
+        guard !id.isEmpty else { return (.none, cp.artistNames, cp.trackURI) }
         let me = try await currentUserId()
         let info = try await api.playlistInfo(id: id)
-        return SourceContext(playlistId: id,
-                             playlistName: info.name,
-                             isEditablePlaylist: info.isEditable(byUserId: me))
+        let source = SourceContext(playlistId: id,
+                                   playlistName: info.name,
+                                   isEditablePlaylist: info.isEditable(byUserId: me))
+        return (source, cp.artistNames, cp.trackURI)
     }
 
     func playlistContains(playlistId: String, trackURI: String) async throws -> Bool {
