@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Not sandboxed (personal/dev build) so ScriptingBridge can control Spotify
+	  and URLSession can reach the Spotify Web API. macOS still shows a one-time
+	  Automation (TCC) prompt the first time we control Spotify.
+	  This entitlement is forward-compatible with enabling the Hardened Runtime
+	  in Phase 3 (notarized distribution).
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

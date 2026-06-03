@@ -1,0 +1,69 @@
+name: SpotifyMenuBar
+
+options:
+  bundleIdPrefix: com.nathanlmeyers
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_BUNDLE_IDENTIFIER: com.nathanlmeyers.SpotifyMenuBar
+    GENERATE_INFOPLIST_FILE: NO
+    INFOPLIST_FILE: Sources/SpotifyMenuBar/Support/Info.plist
+    SWIFT_OBJC_BRIDGING_HEADER: Sources/SpotifyMenuBar/Support/SpotifyMenuBar-Bridging-Header.h
+    CLANG_ENABLE_MODULES: YES
+    CLANG_ENABLE_OBJC_ARC: YES
+    # Ad-hoc signing for local dev. Hardened runtime + notarization come in Phase 3.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: NO
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  SpotifyMenuBar:
+    type: application
+    platform: macOS
+    configFiles:
+      Debug: Secrets.xcconfig
+      Release: Secrets.xcconfig
+    sources:
+      - path: Sources/SpotifyMenuBar
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Sources/SpotifyMenuBar/Support/SpotifyMenuBar.entitlements
+    dependencies:
+      - sdk: ScriptingBridge.framework
+      - sdk: Security.framework
+      - sdk: ServiceManagement.framework
+
+  # Standalone logic tests (no app host) — compiles the pure-Foundation model
+  # file directly so it can run without launching the menu-bar app.
+  SpotifyMenuBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/SpotifyMenuBarTests
+      - path: Sources/SpotifyMenuBar/Models/Models.swift
+      - path: Sources/SpotifyMenuBar/Discovery/DiscoveryLogic.swift
+
+schemes:
+  SpotifyMenuBar:
+    build:
+      targets:
+        SpotifyMenuBar: all
+        SpotifyMenuBarTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SpotifyMenuBarTests
