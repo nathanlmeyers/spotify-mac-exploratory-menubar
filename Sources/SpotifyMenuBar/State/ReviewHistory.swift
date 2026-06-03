@@ -56,9 +56,17 @@ final class ReviewHistory {
 
     // MARK: Persistence
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode(Store.self, from: data) else { return }
-        store = decoded
+        // File absent → legitimate first run; start empty.
+        guard let data = try? Data(contentsOf: fileURL) else { return }
+        do {
+            store = try JSONDecoder().decode(Store.self, from: data)
+        } catch {
+            // File exists but is unreadable (corrupt / partial write / schema change).
+            // Preserve it before any save() overwrites it with the empty default.
+            let backup = fileURL.appendingPathExtension("corrupt")
+            try? data.write(to: backup, options: .atomic)
+            DebugLog.log("ReviewHistory: could not decode history.json (\(error)); backed up to \(backup.lastPathComponent), starting empty")
+        }
     }
 
     private func save() {

@@ -131,8 +131,23 @@ final class SpotifyWebAPI {
         try await send("/playlists/\(id)/items", method: "POST", json: ["uris": [uri]])
     }
 
+    /// The playlist's current `snapshot_id`, used for optimistic-concurrency on edits.
+    func playlistSnapshotId(id: String) async throws -> String {
+        struct Resp: Decodable { let snapshot_id: String }
+        let r: Resp = try await getJSON("/playlists/\(id)", query: [.init(name: "fields", value: "snapshot_id")])
+        return r.snapshot_id
+    }
+
+    /// Removes a track from a playlist.
+    /// NOTE: identifying the track by URI only (no positions) removes EVERY occurrence of
+    /// that URI in the playlist — the local ScriptingBridge doesn't expose the playing
+    /// item's index, so single-occurrence removal isn't possible here. We include the
+    /// current `snapshot_id` so the delete fails cleanly if the playlist changed since we
+    /// read it, rather than acting on a stale playlist.
     func removeTrack(uri: String, fromPlaylist id: String) async throws {
-        try await send("/playlists/\(id)/items", method: "DELETE", json: ["items": [["uri": uri]]])
+        let snapshotId = try await playlistSnapshotId(id: id)
+        try await send("/playlists/\(id)/items", method: "DELETE",
+                       json: ["items": [["uri": uri]], "snapshot_id": snapshotId])
     }
 
     // MARK: - Request plumbing

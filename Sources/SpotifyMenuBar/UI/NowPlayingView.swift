@@ -29,29 +29,38 @@ struct NowPlayingView: View {
 
     @ViewBuilder private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            topBar
+            // When a track is shown, the gear lives inline on the title row (see
+            // `trackHeader`); the standalone top bar is only for the states without one.
             if let held = heldTrack {
                 heldPlayer(held)
             } else if !model.hasClientID {
+                topBar
                 clientIDMissing
             } else if !model.isAuthorized {
+                topBar
                 loggedOut
             } else if let np = model.nowPlaying {
                 player(np)
             } else {
+                topBar
                 idleState
             }
         }
     }
 
-    /// Settings gear in the top-right corner; shown in every state.
+    /// Settings gear, right-aligned on its own row — used in states with no track header.
     private var topBar: some View {
         HStack {
             Spacer()
-            Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
-                Image(systemName: "gearshape")
-            }.help("Settings").buttonStyle(.borderless)
+            settingsGear
         }
+    }
+
+    /// The settings gear button (opens the Settings window via notification).
+    private var settingsGear: some View {
+        Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
+            Image(systemName: "gearshape")
+        }.help("Settings").buttonStyle(.borderless)
     }
 
     // MARK: Non-player states
@@ -132,11 +141,14 @@ struct NowPlayingView: View {
         HStack(alignment: .top, spacing: 12) {
             artwork(np.artworkURL)
             VStack(alignment: .leading, spacing: 3) {
-                Text(np.name.isEmpty ? "—" : np.name).font(.headline).lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(np.name.isEmpty ? "—" : np.name).font(.headline).lineLimit(2)
+                    Spacer(minLength: 0)
+                    settingsGear
+                }
                 Text(model.artistText(for: np)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 Text(fromToLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer(minLength: 0)
         }
     }
 
@@ -200,13 +212,14 @@ struct NowPlayingView: View {
     }
 
     private func curationHeld(_ held: HeldTrack) -> some View {
-        HStack(spacing: 8) {
+        let canRemove = model.canRemoveFromSource
+        return HStack(spacing: 8) {
             Button { model.heldRemove() } label: {
                 Label("Remove", systemImage: "minus.circle.fill").frame(maxWidth: .infinity)
             }
             .tint(.red)
-            .disabled(!held.canRemoveFromSource)
-            .help(held.canRemoveFromSource ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove"))
+            .disabled(!canRemove)
+            .help(canRemove ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove"))
 
             Button { model.heldAdd() } label: {
                 Label("Add", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)

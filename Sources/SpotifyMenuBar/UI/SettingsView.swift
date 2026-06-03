@@ -103,30 +103,35 @@ struct SettingsView: View {
     @ViewBuilder private var discoverySection: some View {
         Section {
             Toggle("Enable discovery mode", isOn: $settings.discoveryEnabled)
-            Group {
-                Text("Alert me when a song is held:").font(.caption).foregroundStyle(.secondary)
-                Toggle("Auto-open the panel", isOn: $settings.alertAutoOpenPanel)
-                Toggle("Shade the menu bar icon when a song is held", isOn: $settings.alertBadgeIcon)
-                Toggle("Play a sound", isOn: $settings.alertSound)
-                Toggle("Keep the review panel open until I choose", isOn: $settings.keepHeldPanelOpen)
-                    .help("While a song is held, don't close the panel when you click elsewhere — only Add, Remove, or Next will dismiss it.")
-            }
-            .disabled(!settings.discoveryEnabled)
+            Text("Pauses each song just before it ends so you can decide — Add, Remove, or Next — without it auto-advancing. Great for triaging new-releases playlists.")
+                .font(.caption).foregroundStyle(.secondary)
 
-            Group {
-                Text("Auto-skip (don't hold) when:").font(.caption).foregroundStyle(.secondary)
-                Toggle("Song is already in the target playlist", isOn: $settings.skipIfInTarget)
-                Toggle("…and also remove it from the source", isOn: $settings.skipInTargetAlsoRemove)
-                    .padding(.leading, 16)
-                    .disabled(!settings.skipIfInTarget)
-                Toggle("I've already reviewed the song", isOn: $settings.skipAlreadyReviewed)
+            if settings.discoveryEnabled {
+                Group {
+                    Text("Alert me when a song is held:").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Auto-open the panel", isOn: $settings.alertAutoOpenPanel)
+                    Toggle("Shade the menu bar icon when a song is held", isOn: $settings.alertBadgeIcon)
+                    Toggle("Play a sound", isOn: $settings.alertSound)
+                    Toggle("Keep the review panel open until I choose", isOn: $settings.keepHeldPanelOpen)
+                        .help("While a song is held, don't close the panel when you click elsewhere — only Add, Remove, or Next will dismiss it.")
+                }
+
+                Group {
+                    Text("Auto-skip (don't hold) when:").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Song is already in the target playlist", isOn: $settings.skipIfInTarget)
+                    Toggle("…and also remove it from the source", isOn: $settings.skipInTargetAlsoRemove)
+                        .padding(.leading, 16)
+                        .disabled(!settings.skipIfInTarget)
+                    Toggle("I've already reviewed the song", isOn: $settings.skipAlreadyReviewed)
+                }
             }
-            .disabled(!settings.discoveryEnabled)
         } header: {
             Text("Discovery mode")
         } footer: {
-            Text("The hold-and-judge behavior ships in the next update; these preferences are saved now.")
-                .font(.caption)
+            if settings.discoveryEnabled {
+                Text("Hold-and-judge is still being finalized; your preferences are saved now.")
+                    .font(.caption)
+            }
         }
     }
 

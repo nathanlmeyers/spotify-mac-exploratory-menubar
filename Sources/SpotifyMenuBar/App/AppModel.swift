@@ -157,7 +157,10 @@ final class AppModel: ObservableObject {
 
     var canRemoveFromSource: Bool {
         guard isAuthorized, let np = nowPlaying, np.kind.isCuratable else { return false }
-        return source.isEditablePlaylist && source.playlistId != nil && !isBusy
+        // Require the source to be resolved for the playing track — guards the brief window
+        // after a track change where `source` still describes the previous track.
+        return source.isEditablePlaylist && source.playlistId != nil
+            && source.trackURI == np.uri && !isBusy
     }
 
     var addDisabledReason: String? {
@@ -175,6 +178,7 @@ final class AppModel: ObservableObject {
         if !np.kind.isCuratable { return reasonForNonTrack(np.kind, verb: "remove") }
         if source.playlistId == nil { return "Not playing from a playlist — nothing to remove from." }
         if !source.isEditablePlaylist { return "You can't edit “\(source.playlistName ?? "this playlist")”." }
+        if source.trackURI != np.uri { return "Confirming this track's playlist…" }
         return nil
     }
 
@@ -190,8 +194,8 @@ final class AppModel: ObservableObject {
     // MARK: Transport
 
     func togglePlayPause() { provider.playPause(); refreshSoon() }
-    func next() { provider.next(); refreshSoon() }
-    func previous() { provider.previous(); refreshSoon() }
+    func next() { discovery.noteUserTransport(); provider.next(); refreshSoon() }
+    func previous() { discovery.noteUserTransport(); provider.previous(); refreshSoon() }
     func toggleShuffle() { provider.setShuffle(!(nowPlaying?.isShuffling ?? false)); refreshSoon() }
     func seek(to seconds: Double) { provider.seek(to: seconds); refreshSoon() }
     func openSpotify() { provider.activateApp() }
@@ -220,6 +224,9 @@ final class AppModel: ObservableObject {
     func addCurrentToTarget() {
         guard let np = nowPlaying else { return }
         let sourceCtx = source
+        // Curating mid-song counts as judging this track: don't let discovery hold it (or its
+        // successor) when it ends — let playback advance naturally.
+        discovery.noteManualReview(uri: np.uri, sourceId: sourceCtx.playlistId)
         Task {
             let ok = await performAdd(uri: np.uri, sourceCtx: sourceCtx)
             if ok, settings.skipToNextAfterAdd { next() }
@@ -229,6 +236,7 @@ final class AppModel: ObservableObject {
     func removeCurrentFromSource() {
         guard let np = nowPlaying, source.isEditablePlaylist, source.playlistId != nil else { return }
         let sourceCtx = source
+        discovery.noteManualReview(uri: np.uri, sourceId: sourceCtx.playlistId)
         Task {
             let ok = await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx)
             if ok, settings.skipToNextAfterRemove { next() }
@@ -276,8 +284,13 @@ final class AppModel: ObservableObject {
                 history.addToMembership(targetId: target, uri: uri)
                 setStatus("Added to \(targetName)")
             }
-            // Move semantics: also remove from source when enabled & editable.
-            if settings.removeFromSourceOnAdd, sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId {
+            // Move semantics: also remove from source when enabled & editable — but never
+            // delete from the target itself, and only when the source was resolved for THIS
+            // track (a stale source must not delete the wrong track from the wrong playlist).
+            if settings.removeFromSourceOnAdd, sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId,
+               DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
+                                                  targetPlaylistId: settings.targetPlaylistId,
+                                                  sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: true) {
                 try await provider.removeTrack(uri: uri, fromPlaylist: src)
                 setStatus("Moved to \(targetName)")
             }
@@ -292,6 +305,15 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func performRemoveFromSource(uri: String, sourceCtx: SourceContext) async -> Bool {
         guard sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId else { return false }
+        // Only remove when the source context was resolved for THIS exact track. If the
+        // source is stale (just changed track, or a missed-preempt hold), refuse rather
+        // than delete the wrong track from the wrong playlist.
+        guard DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
+                                                 targetPlaylistId: settings.targetPlaylistId,
+                                                 sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: false) else {
+            setStatus("Couldn't confirm this track's playlist — try again.", isError: true)
+            return false
+        }
         let name = sourceCtx.playlistName ?? "playlist"
         isBusy = true
         defer { isBusy = false }
