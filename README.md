@@ -41,6 +41,18 @@ The app talks to the Web API as a Spotify "app" that **you** register (free):
 
 ## Build & run
 
+**Quick start** — one command scaffolds `Secrets.xcconfig` if needed, generates the
+project, builds Debug, and launches the app:
+
+```sh
+./scripts/run.sh
+```
+
+(On a fresh checkout it copies `Secrets.example.xcconfig` → `Secrets.xcconfig`; fill in
+your Client ID per the step above, then re-run.)
+
+Or do it manually:
+
 ```sh
 xcodegen generate
 xcodebuild -project SpotifyMenuBar.xcodeproj -scheme SpotifyMenuBar -configuration Debug build
