@@ -70,6 +70,11 @@ struct SettingsView: View {
         Binding(
             get: { settings.targetPlaylistId ?? "" },
             set: { id in
+                if id.isEmpty {
+                    settings.targetPlaylistId = nil
+                    settings.targetPlaylistName = nil
+                    return
+                }
                 if let p = model.editablePlaylists.first(where: { $0.id == id }) { model.setTarget(p) }
             }
         )

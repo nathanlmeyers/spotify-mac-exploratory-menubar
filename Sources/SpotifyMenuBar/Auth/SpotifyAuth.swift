@@ -20,6 +20,7 @@ final class SpotifyAuth: ObservableObject {
         "playlist-modify-public",
         "playlist-modify-private",
         "user-read-playback-state",
+        "user-read-currently-playing",
     ].joined(separator: " ")
 
     @Published private(set) var isAuthorized = false
@@ -53,7 +54,11 @@ final class SpotifyAuth: ObservableObject {
     }
 
     /// False if the developer hasn't filled in their Client ID yet.
-    var hasClientID: Bool { !clientID.isEmpty && !clientID.hasPrefix("REPLACE") }
+    var hasClientID: Bool {
+        !clientID.isEmpty &&
+        !clientID.hasPrefix("REPLACE") &&
+        clientID != "your_client_id_here"
+    }
 
     func beginLogin() {
         guard hasClientID else { lastError = AuthError.missingClientID.errorDescription; return }
