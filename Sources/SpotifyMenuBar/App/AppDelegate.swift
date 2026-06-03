@@ -42,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Keep the menu bar title in sync with playback + the user's preference.
         model.$nowPlaying.sink { [weak self] _ in self?.updateButtonTitle() }.store(in: &cancellables)
+        // Refresh when the full (featured) artist list arrives a beat after the track changes.
+        model.$displayArtists.sink { [weak self] _ in self?.updateButtonTitle() }.store(in: &cancellables)
         model.settings.$showTrackTitleInMenuBar.sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateButtonTitle() }
         }.store(in: &cancellables)
@@ -93,14 +95,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = nil   // restore left-click panel behavior
     }
 
+    /// Total character budget for the menu-bar text (excluding the leading space + icon).
+    private static let menuBarBudget = 45
+
     private func updateButtonTitle() {
         guard let button = statusItem?.button else { return }
-        if model.settings.showTrackTitleInMenuBar, let np = model.nowPlaying, !np.name.isEmpty {
-            let title = np.name.count > 28 ? String(np.name.prefix(27)) + "…" : np.name
-            button.title = " \(title)"
-        } else {
+        guard model.settings.showTrackTitleInMenuBar, let np = model.nowPlaying, !np.name.isEmpty else {
             button.title = ""
+            return
         }
+        button.title = " " + Self.menuBarText(title: np.name, artists: model.artistText(for: np))
+    }
+
+    /// "Artist — Title" within `menuBarBudget`. The title is preserved; the artist list is
+    /// trimmed (with an ellipsis) to whatever room is left. Falls back to a truncated
+    /// title alone when even that doesn't fit.
+    static func menuBarText(title: String, artists: String) -> String {
+        let sep = " — "
+        let artists = artists.trimmingCharacters(in: .whitespaces)
+        guard !artists.isEmpty else {
+            return title.count > menuBarBudget ? String(title.prefix(menuBarBudget - 1)) + "…" : title
+        }
+        // No room for the title + separator + at least one artist char → title only.
+        let roomForArtists = menuBarBudget - title.count - sep.count
+        guard roomForArtists >= 1 else {
+            return title.count > menuBarBudget ? String(title.prefix(menuBarBudget - 1)) + "…" : title
+        }
+        let shownArtists = artists.count > roomForArtists
+            ? String(artists.prefix(max(1, roomForArtists - 1))) + "…"
+            : artists
+        return shownArtists + sep + title
     }
 
     // MARK: Settings

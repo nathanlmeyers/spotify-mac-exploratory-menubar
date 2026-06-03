@@ -82,14 +82,24 @@ final class HoldPanelController {
 
     // MARK: Outside-click dismissal (the panel won't auto-close like a .transient popover)
 
+    /// While a track is held for review and the user opted to keep it open, outside
+    /// clicks don't dismiss — only the in-panel Add/Remove/Next buttons resolve it.
+    /// (The menu-bar icon still toggles the panel, as a manual escape hatch.)
+    private func shouldStayOpen() -> Bool {
+        if case .held = model.reviewState { return model.settings.keepHeldPanelOpen }
+        return false
+    }
+
     private func installOutsideClickMonitor() {
         removeOutsideClickMonitor()
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            if let panel = self?.panel, event.window != panel { self?.dismiss() }
+            guard let self else { return event }
+            if let panel = self.panel, event.window != panel, !self.shouldStayOpen() { self.dismiss() }
             return event
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            self?.dismiss()
+            guard let self, !self.shouldStayOpen() else { return }
+            self.dismiss()
         }
     }
 
