@@ -251,7 +251,7 @@ final class DiscoveryEngine {
            source.isEditablePlaylist, let src = source.playlistId,
            DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
                                               targetPlaylistId: settings.targetPlaylistId,
-                                              sourceTrackURI: uri, actedURI: uri, isMove: true) {
+                                              sourceTrackURI: source.trackURI, actedURI: uri, isMove: true) {
             Task { try? await provider.removeTrack(uri: uri, fromPlaylist: src) }
         }
         if let sid = source.playlistId { history.markReviewed(sourceId: sid, uri: uri) }
