@@ -52,10 +52,14 @@ struct Playlist: Identifiable, Equatable, Codable, Hashable {
 
 /// The playback "context" — what the current track is playing *from*.
 /// `playlistId` is nil when playing an album/artist/liked-songs/queue (not a playlist).
+/// `trackURI` is the track this context was resolved for: a removal must only act when
+/// it still matches the track being curated, otherwise a stale source could delete the
+/// wrong track from the wrong playlist.
 struct SourceContext: Equatable {
     var playlistId: String?
     var playlistName: String?
     var isEditablePlaylist: Bool
+    var trackURI: String?
 
-    static let none = SourceContext(playlistId: nil, playlistName: nil, isEditablePlaylist: false)
+    static let none = SourceContext(playlistId: nil, playlistName: nil, isEditablePlaylist: false, trackURI: nil)
 }

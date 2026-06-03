@@ -62,6 +62,9 @@ final class DiscoveryEngine {
     private var consecutiveAutoSkips = 0
     private var actingTicks = 0
     private var lastPublished: ReviewState = .inactive
+    // Set when the active track was curated from the normal popover: don't slip-hold its
+    // successor when it ends (the user already made a call on it). Cleared on track change.
+    private var suppressSlipForActive = false
 
     init(provider: SpotifyProvider,
          settings: Settings,
@@ -89,6 +92,12 @@ final class DiscoveryEngine {
         guard settings.discoveryEnabled else { goIdle(); return }
         // Nothing playing, or non-curatable content (ad/episode/local): never hold.
         guard let np, np.kind == .track else { goIdle(); return }
+        // Playing the target playlist itself: nothing to discover, and every track is
+        // trivially "in target" — auto-skip-and-remove would delete the playlist. Stay idle.
+        if DiscoveryLogic.sourceIsTarget(sourcePlaylistId: source.playlistId,
+                                         targetPlaylistId: settings.targetPlaylistId) {
+            goIdle(); return
+        }
 
         let uri = np.uri
         switch phase {
@@ -114,7 +123,7 @@ final class DiscoveryEngine {
 
         case .idle, .watching:
             if uri != activeURI {
-                evaluateNewCandidate(np, source, slip: wasWatchingNearEnd())
+                evaluateNewCandidate(np, source, slip: wasWatchingNearEnd() && !suppressSlipForActive)
             } else {
                 updateWatching(np)
             }
@@ -133,6 +142,7 @@ final class DiscoveryEngine {
     private func evaluateNewCandidate(_ np: NowPlaying, _ source: SourceContext, slip: Bool) {
         invalidateTimer()
         activeURI = np.uri
+        suppressSlipForActive = false   // the slip decision for this transition is already made
 
         // Already held/judged this URI: never re-prompt (guards backward-scrub / repeat).
         if heldOrJudgedURIs.contains(np.uri) {
@@ -178,8 +188,13 @@ final class DiscoveryEngine {
         consecutiveAutoSkips += 1
 
         // "Skip if in target" with the move option also removes from the source.
+        // Defense-in-depth: never let a *move* delete from the target itself (the onTick
+        // source==target guard already prevents reaching here in that case).
         if kind == .inTarget, settings.skipInTargetAlsoRemove,
-           source.isEditablePlaylist, let src = source.playlistId {
+           source.isEditablePlaylist, let src = source.playlistId,
+           DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
+                                              targetPlaylistId: settings.targetPlaylistId,
+                                              sourceTrackURI: uri, actedURI: uri, isMove: true) {
             Task { try? await provider.removeTrack(uri: uri, fromPlaylist: src) }
         }
         if let sid = source.playlistId { history.markReviewed(sourceId: sid, uri: uri) }
@@ -260,6 +275,19 @@ final class DiscoveryEngine {
         provider.next()
     }
 
+    /// The user curated the *currently playing* track from the normal popover (not the held
+    /// panel). Mark it judged so discovery neither holds it at its natural end nor slip-holds
+    /// the track that plays next — playback just advances on its own.
+    func noteManualReview(uri: String, sourceId: String?) {
+        guard settings.discoveryEnabled else { return }
+        heldOrJudgedURIs.insert(uri)
+        if let sid = sourceId { history.markReviewed(sourceId: sid, uri: uri) }
+        if activeURI == uri {
+            invalidateTimer()              // cancel any armed precise-pause for this track
+            suppressSlipForActive = true   // and don't slip-hold whatever plays next
+        }
+    }
+
     /// Full reset (logout, discovery disabled, source change).
     func reset() {
         invalidateTimer()
@@ -275,6 +303,7 @@ final class DiscoveryEngine {
         invalidateTimer()
         activeURI = nil
         actingTicks = 0
+        suppressSlipForActive = false
         setPhase(.idle, publish: .inactive)
     }
 

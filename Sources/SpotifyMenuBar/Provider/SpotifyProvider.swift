@@ -59,7 +59,8 @@ final class SpotifyProvider: MusicProvider {
         let info = try await api.playlistInfo(id: id)
         let source = SourceContext(playlistId: id,
                                    playlistName: info.name,
-                                   isEditablePlaylist: info.isEditable(byUserId: me))
+                                   isEditablePlaylist: info.isEditable(byUserId: me),
+                                   trackURI: cp.trackURI)
         return (source, cp.artistNames, cp.trackURI)
     }
 

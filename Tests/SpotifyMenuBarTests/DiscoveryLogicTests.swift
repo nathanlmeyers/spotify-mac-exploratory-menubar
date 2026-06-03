@@ -57,4 +57,58 @@ final class DiscoveryLogicTests: XCTestCase {
             uri: "spotify:track:new", visited: ["spotify:track:other"],
             consecutiveSoFar: 3, ceiling: 25))
     }
+
+    // MARK: Source == target (deletion guard for the reported mass-delete bug)
+
+    func testSourceIsTargetWhenEqual() {
+        XCTAssertTrue(DiscoveryLogic.sourceIsTarget(sourcePlaylistId: "p1", targetPlaylistId: "p1"))
+    }
+
+    func testSourceIsTargetWhenDifferent() {
+        XCTAssertFalse(DiscoveryLogic.sourceIsTarget(sourcePlaylistId: "p1", targetPlaylistId: "p2"))
+    }
+
+    func testSourceIsTargetWithNils() {
+        XCTAssertFalse(DiscoveryLogic.sourceIsTarget(sourcePlaylistId: nil, targetPlaylistId: nil))
+        XCTAssertFalse(DiscoveryLogic.sourceIsTarget(sourcePlaylistId: nil, targetPlaylistId: "p1"))
+        XCTAssertFalse(DiscoveryLogic.sourceIsTarget(sourcePlaylistId: "p1", targetPlaylistId: nil))
+    }
+
+    // MARK: mayRemoveFromSource (move-never-deletes-target + source-must-match-track)
+
+    func testMoveNeverRemovesFromTarget() {
+        // Move where the source IS the target: must refuse, even if the track matches.
+        XCTAssertFalse(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: "p1", targetPlaylistId: "p1",
+            sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: true))
+    }
+
+    func testMoveFromDifferentSourceAllowedWhenTrackMatches() {
+        XCTAssertTrue(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: "src", targetPlaylistId: "tgt",
+            sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: true))
+    }
+
+    func testManualRemoveFromTargetAllowedWhenTrackMatches() {
+        // Explicit (non-move) removal from the target is a deliberate user action.
+        XCTAssertTrue(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: "p1", targetPlaylistId: "p1",
+            sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: false))
+    }
+
+    func testRemoveRefusedWhenSourceTrackMismatch() {
+        // Stale source resolved for a different track than the one being acted on.
+        XCTAssertFalse(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: "src", targetPlaylistId: "tgt",
+            sourceTrackURI: "spotify:track:OLD", actedURI: "spotify:track:NEW", isMove: false))
+        XCTAssertFalse(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: "src", targetPlaylistId: "tgt",
+            sourceTrackURI: nil, actedURI: "spotify:track:NEW", isMove: true))
+    }
+
+    func testRemoveRefusedWhenNoSourcePlaylist() {
+        XCTAssertFalse(DiscoveryLogic.mayRemoveFromSource(
+            sourcePlaylistId: nil, targetPlaylistId: "tgt",
+            sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: false))
+    }
 }
