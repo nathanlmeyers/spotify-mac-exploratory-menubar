@@ -21,15 +21,19 @@ typedef NS_ENUM(NSInteger, SpotifyPlayerState) {
 /// to avoid auto-launching Spotify.
 @property (nonatomic, readonly) BOOL isRunning;
 
-/// Spotify URI of the current item, e.g. "spotify:track:...", ":episode:", ":local:", ":ad:".
-@property (nonatomic, readonly, nullable) NSString *currentTrackURI;
-@property (nonatomic, readonly, nullable) NSString *currentTrackName;
-@property (nonatomic, readonly, nullable) NSString *currentTrackArtist;
-@property (nonatomic, readonly, nullable) NSString *currentTrackAlbum;
-@property (nonatomic, readonly, nullable) NSString *currentArtworkURL;
+/// A single, internally-consistent snapshot of the current track, or nil when Spotify
+/// isn't running / nothing is playing. All track-identity fields come from ONE atomic read
+/// so they can never straddle a track change (the cause of the "wrong song" menu-bar bug).
+///
+/// Keys (see SpotifyTrackKey in LocalSpotifyMapping.swift):
+///   "id"          NSString  — the track URI (gate; absent/empty ⇒ method returns nil)
+///   "name"        NSString  — present only when non-empty
+///   "artist"      NSString  — present only when non-empty
+///   "album"       NSString  — present only when non-empty
+///   "artworkUrl"  NSString  — present only when non-empty
+///   "durationRaw" NSNumber  — RAW track duration; normalized (ms↔s) on the Swift side
+- (nullable NSDictionary<NSString *, id> *)currentTrackSnapshot;
 
-/// Track length in seconds (normalized; Spotify has historically reported ms).
-@property (nonatomic, readonly) double durationSeconds;
 /// Playback position in seconds. Settable (this is our seek control).
 @property (nonatomic) double playerPosition;
 @property (nonatomic, readonly) SpotifyPlayerState playerState;
