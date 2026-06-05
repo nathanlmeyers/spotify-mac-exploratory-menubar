@@ -54,6 +54,7 @@ targets:
       - path: Tests/SpotifyMenuBarTests
       - path: Sources/SpotifyMenuBar/Models/Models.swift
       - path: Sources/SpotifyMenuBar/Discovery/DiscoveryLogic.swift
+      - path: Sources/SpotifyMenuBar/Spotify/LocalSpotifyMapping.swift
 
 schemes:
   SpotifyMenuBar:
