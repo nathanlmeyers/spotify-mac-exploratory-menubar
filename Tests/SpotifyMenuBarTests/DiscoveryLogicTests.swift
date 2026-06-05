@@ -8,20 +8,20 @@ final class DiscoveryLogicTests: XCTestCase {
 
     func testNoAutoSkipWhenRulesOff() {
         XCTAssertNil(DiscoveryLogic.autoSkipKind(
-            inTarget: true, reviewed: true,
+            sourceConfirmed: true, inTarget: true, reviewed: true,
             skipIfInTarget: false, skipAlreadyReviewed: false))
     }
 
     func testInTargetWins() {
         XCTAssertEqual(
-            DiscoveryLogic.autoSkipKind(inTarget: true, reviewed: true,
+            DiscoveryLogic.autoSkipKind(sourceConfirmed: true, inTarget: true, reviewed: true,
                                         skipIfInTarget: true, skipAlreadyReviewed: true),
             .inTarget)
     }
 
     func testReviewedWhenNotInTarget() {
         XCTAssertEqual(
-            DiscoveryLogic.autoSkipKind(inTarget: false, reviewed: true,
+            DiscoveryLogic.autoSkipKind(sourceConfirmed: true, inTarget: false, reviewed: true,
                                         skipIfInTarget: true, skipAlreadyReviewed: true),
             .reviewed)
     }
@@ -29,13 +29,22 @@ final class DiscoveryLogicTests: XCTestCase {
     func testFlagsGateEachRule() {
         // In target but the in-target rule is off, reviewed rule on -> reviewed.
         XCTAssertEqual(
-            DiscoveryLogic.autoSkipKind(inTarget: true, reviewed: true,
+            DiscoveryLogic.autoSkipKind(sourceConfirmed: true, inTarget: true, reviewed: true,
                                         skipIfInTarget: false, skipAlreadyReviewed: true),
             .reviewed)
         // Reviewed but that rule is off -> no skip.
         XCTAssertNil(
-            DiscoveryLogic.autoSkipKind(inTarget: false, reviewed: true,
+            DiscoveryLogic.autoSkipKind(sourceConfirmed: false, inTarget: false, reviewed: true,
                                         skipIfInTarget: true, skipAlreadyReviewed: false))
+    }
+
+    func testNoAutoSkipWhenSourceUnconfirmed() {
+        // Stale source context (resolved for a different track): never skip, even when the
+        // track is in target / reviewed and both rules are on. This is the regression guard
+        // for playing the target playlist auto-skipping reviewed/in-target songs.
+        XCTAssertNil(
+            DiscoveryLogic.autoSkipKind(sourceConfirmed: false, inTarget: true, reviewed: true,
+                                        skipIfInTarget: true, skipAlreadyReviewed: true))
     }
 
     // MARK: Loop protection
