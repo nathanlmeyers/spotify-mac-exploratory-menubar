@@ -7,10 +7,17 @@ enum AutoSkipKind: Equatable { case inTarget, reviewed }
 /// (compiled directly into the test target).
 enum DiscoveryLogic {
     /// First-match-wins auto-skip decision for a candidate track.
-    static func autoSkipKind(inTarget: Bool,
+    /// `sourceConfirmed` gates the whole decision: the playback `SourceContext` is resolved
+    /// asynchronously and lags the now-playing track by a tick or two. Acting on a stale
+    /// context auto-skips the wrong tracks — e.g. starting the target playlist while the
+    /// source still reads as the previous playlist skips reviewed/in-target songs. Wait for
+    /// the context to confirm before skipping. Mirrors `mayRemoveFromSource`'s freshness check.
+    static func autoSkipKind(sourceConfirmed: Bool,
+                             inTarget: Bool,
                              reviewed: Bool,
                              skipIfInTarget: Bool,
                              skipAlreadyReviewed: Bool) -> AutoSkipKind? {
+        guard sourceConfirmed else { return nil }
         if skipIfInTarget && inTarget { return .inTarget }
         if skipAlreadyReviewed && reviewed { return .reviewed }
         return nil

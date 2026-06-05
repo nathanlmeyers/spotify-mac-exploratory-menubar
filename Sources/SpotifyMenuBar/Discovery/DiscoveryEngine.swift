@@ -226,6 +226,7 @@ final class DiscoveryEngine {
         let inTarget = targetMembership().contains(np.uri)
         let reviewed = source.playlistId.map { history.hasReviewed(sourceId: $0, uri: np.uri) } ?? false
         return DiscoveryLogic.autoSkipKind(
+            sourceConfirmed: source.trackURI == np.uri,
             inTarget: inTarget,
             reviewed: reviewed,
             skipIfInTarget: settings.skipIfInTarget,
