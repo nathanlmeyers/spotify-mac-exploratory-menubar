@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // One borderless panel serves both the manual click and the discovery hold; it hugs
     // the menu bar (no arrow/gap like NSPopover) and renders standard vs held from reviewState.
     private lazy var holdPanel = HoldPanelController(model: model)
+    // True only while the panel was opened by a discovery hold (not a manual click), so leaving
+    // .held closes the auto-opened panel but never a panel the user opened themselves.
+    private var presentedByHold = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Receive the spotifymenubar://callback URL (PKCE redirect).
@@ -77,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if holdPanel.isVisible {
             holdPanel.dismiss()
         } else {
+            presentedByHold = false   // user-opened: don't let a later non-held transition close it
             holdPanel.present(below: statusItem)
             Task {
                 await model.refreshSource()
@@ -152,12 +156,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard s.discoveryEnabled else { return }
         if s.alertSound { NSSound(named: NSSound.Name("Tink"))?.play() }
         if s.alertBadgeIcon { shadeIcon(held: true) }
-        if s.alertAutoOpenPanel { holdPanel.present(below: statusItem) }
+        if s.alertAutoOpenPanel { presentedByHold = true; holdPanel.present(below: statusItem) }
     }
 
     private func dismissHold() {
         shadeIcon(held: false)
-        holdPanel.dismiss()
+        // Only close the panel if discovery opened it; leave a user-opened panel in place.
+        if presentedByHold { holdPanel.dismiss(); presentedByHold = false }
     }
 
     // MARK: Menu bar icon

@@ -56,6 +56,19 @@ enum DiscoveryLogic {
         return s == t
     }
 
+    /// Normalize a Spotify Connect device name for comparison against the local computer name.
+    /// Spotify's reported desktop name and `Host.current().localizedName` routinely differ in
+    /// ways a byte-exact compare misses: a curly apostrophe (U+2019) vs ASCII `'`, case, accents,
+    /// and the macOS ` (2)`/` (3)` duplicate-collision suffix Spotify often drops. Fold all of
+    /// these so "this Mac" is recognized reliably (a false-negative silently kills discovery).
+    static func normalizedDeviceName(_ s: String) -> String {
+        var t = s.replacingOccurrences(of: "\u{2019}", with: "'")
+                 .replacingOccurrences(of: "\u{2018}", with: "'")
+        t = t.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: nil)
+        if let r = t.range(of: " \\(\\d+\\)$", options: .regularExpression) { t.removeSubrange(r) }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Whether it's safe to remove `actedURI` from the source playlist.
     /// - A move (auto-skip / move-on-add) must never delete from the target itself.
     /// - Any removal must act on the source that was resolved for THIS exact track,

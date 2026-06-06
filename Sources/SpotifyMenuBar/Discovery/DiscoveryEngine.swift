@@ -50,11 +50,11 @@ final class DiscoveryEngine {
     private let targetMembership: () -> Set<String>
     private let canAddNow: () -> Bool
     private let canRemoveNow: () -> Bool
-    private let sourceName: () -> String?
     private let targetName: () -> String?
-    // Whether playback is on this Mac. When false (phone / speaker / other computer) discovery
-    // stays idle so its pause never propagates to the active device via Spotify Connect.
-    private let activeDeviceIsLocal: () -> Bool
+    // Whether playback is on this Mac: true = confirmed local, false = confirmed remote, nil =
+    // unknown (not yet confirmed). Discovery issues transport (pause/next/previous) ONLY on a
+    // confirmed `true`, so it never reaches a phone/speaker/other computer or an unconfirmed device.
+    private let activeDeviceIsLocal: () -> Bool?
 
     /// Published to AppModel (deduped — only fires on genuine state changes).
     var onStateChange: ((ReviewState) -> Void)?
@@ -83,16 +83,14 @@ final class DiscoveryEngine {
          targetMembership: @escaping () -> Set<String>,
          canAddNow: @escaping () -> Bool,
          canRemoveNow: @escaping () -> Bool,
-         sourceName: @escaping () -> String?,
          targetName: @escaping () -> String?,
-         activeDeviceIsLocal: @escaping () -> Bool) {
+         activeDeviceIsLocal: @escaping () -> Bool?) {
         self.provider = provider
         self.settings = settings
         self.history = history
         self.targetMembership = targetMembership
         self.canAddNow = canAddNow
         self.canRemoveNow = canRemoveNow
-        self.sourceName = sourceName
         self.targetName = targetName
         self.activeDeviceIsLocal = activeDeviceIsLocal
     }
@@ -103,9 +101,14 @@ final class DiscoveryEngine {
         defer { lastNP = np }
 
         guard settings.discoveryEnabled else { goIdle(); return }
-        // Playback is on another Connect device (phone / speaker / other computer): never hold,
-        // or our pause would propagate to it. Stay idle until playback returns to this Mac.
-        guard activeDeviceIsLocal() else { goIdle(); return }
+        // Only operate when playback is confirmed on THIS Mac. Anything else — a confirmed remote
+        // device, or an unconfirmed/unknown one — must not issue transport, or our pause/skip would
+        // propagate to it via Connect. Exception: a paused hold issues no transport and is safe to
+        // keep across a transient device blip, so don't tear it down here (it resumes when local).
+        if activeDeviceIsLocal() != true {
+            if case .holding = phase { return }
+            goIdle(); return
+        }
         // Nothing playing, or non-curatable content (ad/episode/local): never hold.
         guard let np, np.kind == .track else { goIdle(); return }
         // Playing the target playlist itself: nothing to discover, and every track is
@@ -122,8 +125,17 @@ final class DiscoveryEngine {
             resolveReclaim(np, source, expectedA: expectedA, attempts: attempts)
 
         case .holding(let heldURI):
-            if uri != heldURI { evaluateNewCandidate(np, source) }
-            // else: stay held; ignore position drift.
+            if uri != heldURI {
+                evaluateNewCandidate(np, source)
+            } else if np.isPlaying,
+                      np.durationSeconds > minHoldableDuration,
+                      (np.durationSeconds - np.positionSeconds) <= lead + 1.0 {
+                // The held track is playing again (a re-listen, or a pause that didn't take) and is
+                // about to run off its end. Re-pause so the hold never slips to the next song —
+                // pinned a hair early on purpose; the exact spot doesn't matter on a re-listen.
+                provider.pause()
+            }
+            // else: paused, or re-listening with time to spare — stay held; ignore position drift.
 
         case .acting:
             if uri != activeURI {
@@ -131,8 +143,11 @@ final class DiscoveryEngine {
                 evaluateNewCandidate(np, source)
             } else {
                 actingTicks += 1
-                if actingTicks == 2 { provider.next() }          // advance didn't take — retry once
-                else if actingTicks >= 4 { actingTicks = 0; goIdle() }
+                // Still on the old track. Retry next() only after ~3 ticks: a slow-but-successful
+                // first next() would already have landed by then, so we don't double-advance and
+                // skip the successor unreviewed. `uri == activeURI` is this tick's fresh read.
+                if actingTicks == 3 { provider.next() }
+                else if actingTicks >= 6 { actingTicks = 0; goIdle() }
             }
 
         case .exhausted:
@@ -286,6 +301,11 @@ final class DiscoveryEngine {
             if remaining > lead + manualPauseSlack { invalidateTimer() }
             return
         }
+        // Auto-skip couldn't be evaluated when this track first appeared — its SourceContext lags
+        // the track change by a tick, so `evaluateNewCandidate` saw an unconfirmed source and (
+        // correctly) refused to skip. Re-check now that the source has confirmed, so an already-in-
+        // target / already-reviewed track is skipped instead of held for its whole duration.
+        if let kind = autoSkipKind(np, lastSource) { performAutoSkip(np, lastSource, kind: kind); return }
         // Poll-driven pause: if this fresh poll already shows we're within the lead window,
         // hold now rather than trusting the scheduled timer to fire on time.
         if np.durationSeconds > minHoldableDuration,
@@ -313,7 +333,7 @@ final class DiscoveryEngine {
         guard case .watching = phase, let uri = activeURI, !heldOrJudgedURIs.contains(uri) else { return }
         // The timer is armed up to a whole song earlier and fires independently of the poll
         // loop: re-check here so a hand-off to the phone since arming can't pause the phone.
-        guard activeDeviceIsLocal() else { goIdle(); return }
+        guard activeDeviceIsLocal() == true else { goIdle(); return }
         guard let live = provider.nowPlaying() else { return }
         if live.uri == uri {
             DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")
@@ -339,6 +359,10 @@ final class DiscoveryEngine {
             beginReclaim(expectedA: expectedURI, source: lastSource)
             return
         }
+        // If the pause hasn't taken yet (still playing the expected track), re-issue it before
+        // holding so we never commit a hold over live, still-advancing playback; the .holding
+        // re-pin keeps it parked thereafter.
+        if let fresh, fresh.uri == expectedURI, fresh.isPlaying { provider.pause() }
         // fresh matches → real paused snapshot; fresh nil → conservative pre-pause snapshot.
         commitHold((fresh?.uri == expectedURI ? fresh : nil) ?? fallback)
     }
@@ -353,7 +377,9 @@ final class DiscoveryEngine {
             snapshot: np,
             canAdd: canAddNow(),
             canRemoveFromSource: canRemoveNow(),
-            sourceName: sourceName(),
+            // Freeze the provenance from the source confirmed FOR THIS track (nil if the source is
+            // mid-resolution, e.g. just after a reclaim) so the panel never shows another playlist.
+            sourceName: lastSource.trackURI == np.uri ? lastSource.playlistName : nil,
             targetName: targetName()
         )))
     }
@@ -369,8 +395,19 @@ final class DiscoveryEngine {
         resetLoopProtection()
         activeURI = judgedURI
         actingTicks = 0
-        setPhase(.acting, publish: .watching)
-        provider.next()
+        // Only advance if playback is still parked on the judged track AND on this Mac. During a
+        // re-listen the track can auto-advance before the user taps a judge button — calling next()
+        // then would skip the (unreviewed) successor. If playback already moved on, evaluate what's
+        // actually playing instead of blindly skipping it; if it's not on this Mac, don't transport.
+        let live = provider.nowPlaying()
+        if activeDeviceIsLocal() == true, live == nil || live?.uri == judgedURI {
+            setPhase(.acting, publish: .watching)
+            provider.next()
+        } else if let live, live.uri != judgedURI {
+            evaluateNewCandidate(live, lastSource)
+        } else {
+            setPhase(.watching, publish: .watching)   // not local / unknown: don't issue transport
+        }
     }
 
     /// The user curated the *currently playing* track from the normal popover (not the held

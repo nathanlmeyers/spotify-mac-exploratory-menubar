@@ -105,7 +105,7 @@ struct NowPlayingView: View {
 
     private func player(_ np: NowPlaying) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            trackHeader(np)
+            trackHeader(np, fromName: model.source.playlistName)
             Scrubber(np: np) { model.seek(to: $0) }
             transport(np)
             curationNormal
@@ -121,7 +121,7 @@ struct NowPlayingView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Label("Held for review", systemImage: "pause.circle.fill")
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
-            trackHeader(np)
+            trackHeader(np, fromName: held.sourceName)
             Scrubber(np: np) { model.seek(to: $0) }
             HStack {
                 Spacer()
@@ -137,7 +137,7 @@ struct NowPlayingView: View {
 
     // MARK: Shared pieces
 
-    private func trackHeader(_ np: NowPlaying) -> some View {
+    private func trackHeader(_ np: NowPlaying, fromName: String?) -> some View {
         HStack(alignment: .top, spacing: 12) {
             artwork(np.artworkURL)
             VStack(alignment: .leading, spacing: 3) {
@@ -147,7 +147,7 @@ struct NowPlayingView: View {
                     settingsGear
                 }
                 Text(model.artistText(for: np)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                Text(fromToLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(fromToLine(from: fromName)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
@@ -167,8 +167,8 @@ struct NowPlayingView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    private var fromToLine: String {
-        let from = model.source.playlistName ?? "—"
+    private func fromToLine(from: String?) -> String {
+        let from = from ?? "—"
         let to = model.settings.targetPlaylistName ?? "Set target"
         return "From \(from)  →  \(to)"
     }
