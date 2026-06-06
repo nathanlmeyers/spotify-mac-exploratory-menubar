@@ -58,34 +58,47 @@ final class SpotifyWebAPI {
         let contextType: String?
         let artistNames: [String]   // all credited artists (incl. features)
         let trackURI: String?
+        let device: PlaybackDevice? // the active Spotify Connect device (nil if unknown)
     }
 
-    /// The currently-playing item: its playback context + the full artist list.
-    /// Returns nil if nothing is playing.
+    /// The currently-playing item: its playback context, the full artist list, and the
+    /// active Connect device. Uses `/me/player` (not `/me/player/currently-playing`) because
+    /// only that endpoint returns the `device` object — both come back in one call.
+    /// Returns nil when there's no active playback session (HTTP 204).
     func currentContext() async throws -> CurrentlyPlaying? {
         let token = try await auth.validAccessToken()
-        var req = URLRequest(url: urlForPath("/me/player/currently-playing"))
+        var req = URLRequest(url: urlForPath("/me/player"))
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { return nil }
-        if http.statusCode == 204 { return nil }        // nothing playing
+        if http.statusCode == 204 { return nil }        // no active device / nothing playing
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
         struct Resp: Decodable {
+            struct Device: Decodable {
+                let id: String?
+                let name: String?
+                let type: String?
+                let is_active: Bool?
+            }
             struct Context: Decodable { let uri: String?; let type: String? }
             struct Item: Decodable {
                 let uri: String?
                 let artists: [Artist]?
                 struct Artist: Decodable { let name: String? }
             }
+            let device: Device?
             let context: Context?
             let item: Item?
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         let names = (r.item?.artists ?? []).compactMap { $0.name }.filter { !$0.isEmpty }
+        let device = r.device.map {
+            PlaybackDevice(id: $0.id, name: $0.name, type: $0.type, isActive: $0.is_active ?? false)
+        }
         return CurrentlyPlaying(contextURI: r.context?.uri, contextType: r.context?.type,
-                                artistNames: names, trackURI: r.item?.uri)
+                                artistNames: names, trackURI: r.item?.uri, device: device)
     }
 
     func playlistInfo(id: String) async throws -> Playlist {
