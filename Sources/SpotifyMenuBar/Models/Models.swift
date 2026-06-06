@@ -35,6 +35,15 @@ struct NowPlaying: Equatable {
     }
 }
 
+/// The Spotify Connect device playback is currently routed to.
+/// `type` is Spotify's string ("Computer", "Smartphone", "Speaker", "TV", ...).
+struct PlaybackDevice: Equatable {
+    var id: String?
+    var name: String?
+    var type: String?
+    var isActive: Bool
+}
+
 /// A Spotify playlist (subset of fields we need).
 struct Playlist: Identifiable, Equatable, Codable, Hashable {
     var id: String          // playlist id (not the URI)

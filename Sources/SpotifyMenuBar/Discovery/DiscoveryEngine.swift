@@ -52,6 +52,9 @@ final class DiscoveryEngine {
     private let canRemoveNow: () -> Bool
     private let sourceName: () -> String?
     private let targetName: () -> String?
+    // Whether playback is on this Mac. When false (phone / speaker / other computer) discovery
+    // stays idle so its pause never propagates to the active device via Spotify Connect.
+    private let activeDeviceIsLocal: () -> Bool
 
     /// Published to AppModel (deduped — only fires on genuine state changes).
     var onStateChange: ((ReviewState) -> Void)?
@@ -81,7 +84,8 @@ final class DiscoveryEngine {
          canAddNow: @escaping () -> Bool,
          canRemoveNow: @escaping () -> Bool,
          sourceName: @escaping () -> String?,
-         targetName: @escaping () -> String?) {
+         targetName: @escaping () -> String?,
+         activeDeviceIsLocal: @escaping () -> Bool) {
         self.provider = provider
         self.settings = settings
         self.history = history
@@ -90,6 +94,7 @@ final class DiscoveryEngine {
         self.canRemoveNow = canRemoveNow
         self.sourceName = sourceName
         self.targetName = targetName
+        self.activeDeviceIsLocal = activeDeviceIsLocal
     }
 
     // MARK: - Poll entry point (called from AppModel.tick())
@@ -98,6 +103,9 @@ final class DiscoveryEngine {
         defer { lastNP = np }
 
         guard settings.discoveryEnabled else { goIdle(); return }
+        // Playback is on another Connect device (phone / speaker / other computer): never hold,
+        // or our pause would propagate to it. Stay idle until playback returns to this Mac.
+        guard activeDeviceIsLocal() else { goIdle(); return }
         // Nothing playing, or non-curatable content (ad/episode/local): never hold.
         guard let np, np.kind == .track else { goIdle(); return }
         // Playing the target playlist itself: nothing to discover, and every track is
@@ -197,15 +205,13 @@ final class DiscoveryEngine {
             setPhase(.reclaiming(expectedA: expectedA, attempts: attempts + 1), publish: .watching)
             return
         }
-        // Gave up reclaiming A. Fall back to the track we're on — but never re-hold a seen one.
-        DebugLog.log("discovery: RECLAIM failed for \"\(expectedA)\"; falling back to \"\(np.uri)\"")
-        if heldOrJudgedURIs.contains(np.uri) {
-            evaluateNewCandidate(np, source)
-        } else {
-            provider.pause()
-            activeURI = np.uri
-            enterHolding(expectedURI: np.uri, fallback: np)
-        }
+        // Gave up reclaiming A: Spotify won't step back to it. HARD RULE — never hold whatever
+        // is playing now as if it were the track under review; that is exactly how the *next*
+        // song ends up in the judge panel. Let A go and evaluate the current track as a fresh
+        // candidate, so it's held at ITS own end (or auto-skipped) — never mid-song under the
+        // wrong identity. The judge panel only ever shows the song discovery set out to review.
+        DebugLog.log("discovery: RECLAIM failed for \"\(expectedA)\"; not holding successor \"\(np.uri)\" — evaluating it fresh")
+        evaluateNewCandidate(np, source)
     }
 
     // MARK: - Candidate evaluation
@@ -305,6 +311,9 @@ final class DiscoveryEngine {
 
     private func firePreciseHold() {
         guard case .watching = phase, let uri = activeURI, !heldOrJudgedURIs.contains(uri) else { return }
+        // The timer is armed up to a whole song earlier and fires independently of the poll
+        // loop: re-check here so a hand-off to the phone since arming can't pause the phone.
+        guard activeDeviceIsLocal() else { goIdle(); return }
         guard let live = provider.nowPlaying() else { return }
         if live.uri == uri {
             DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")

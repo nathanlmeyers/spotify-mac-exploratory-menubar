@@ -26,6 +26,12 @@ final class AppModel: ObservableObject {
     private var pollTimer: Timer?
     private var lastURI: String?
     private var lastSourceId: String?
+    // Whether Spotify's active Connect device is this Mac. Discovery only runs when true,
+    // so a hand-off to the phone (or a speaker / another computer) stops it from pausing.
+    // Default true so normal local discovery works at startup; only overwritten when known.
+    private var activeDeviceIsLocal = true
+    private var deviceRefreshCounter = 0
+    private let deviceRefreshEverySeconds = 3
     private var targetMembership: Set<String> = []
     private var statusClear: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
@@ -49,7 +55,8 @@ final class AppModel: ObservableObject {
             canAddNow: { [weak self] in self?.canAdd ?? false },
             canRemoveNow: { [weak self] in self?.canRemoveFromSource ?? false },
             sourceName: { [weak self] in self?.source.playlistName },
-            targetName: { [weak self] in self?.settings.targetPlaylistName }
+            targetName: { [weak self] in self?.settings.targetPlaylistName },
+            activeDeviceIsLocal: { [weak self] in self?.activeDeviceIsLocal ?? true }
         )
         discovery.onStateChange = { [weak self] state in self?.handleReviewState(state) }
         // Toggling discovery off clears the per-URI/loop guards.
@@ -87,7 +94,30 @@ final class AppModel: ObservableObject {
                 source = .none
             }
         }
+        // The active device can change without the track changing (a mid-song Spotify Connect
+        // hand-off). Refresh the device flag on a short cadence while discovery is armed and
+        // something is playing, so we stop pausing promptly when playback leaves this Mac.
+        if isAuthorized, settings.discoveryEnabled, np != nil {
+            deviceRefreshCounter += 1
+            if deviceRefreshCounter >= deviceRefreshEverySeconds {
+                deviceRefreshCounter = 0
+                Task { await refreshActiveDevice() }
+            }
+        } else {
+            deviceRefreshCounter = 0
+        }
         discovery.onTick(np: np, source: source)
+    }
+
+    /// Cheap, throttled refresh of just the active-device flag (one `/me/player` call).
+    /// Catches mid-song Connect transfers that don't change the track URI.
+    private func refreshActiveDevice() async {
+        guard isAuthorized else { return }
+        do {
+            if let local = try await provider.activeDeviceIsLocal() { activeDeviceIsLocal = local }
+        } catch {
+            // Transient error: keep the last-known value rather than flip to a wrong state.
+        }
     }
 
     func refreshAfterLogin() async {
@@ -109,6 +139,7 @@ final class AppModel: ObservableObject {
             source = result.source
             displayArtists = result.artists
             displayArtistsURI = result.trackURI
+            if let local = result.deviceIsLocal { activeDeviceIsLocal = local }
         } catch { source = .none }
         // A genuine source-playlist change starts a fresh discovery sweep.
         if let id = source.playlistId, id != lastSourceId {
