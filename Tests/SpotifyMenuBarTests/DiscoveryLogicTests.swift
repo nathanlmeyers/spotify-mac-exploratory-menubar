@@ -121,6 +121,36 @@ final class DiscoveryLogicTests: XCTestCase {
             sourceTrackURI: "spotify:track:a", actedURI: "spotify:track:a", isMove: false))
     }
 
+    // MARK: Device-name normalization (this-Mac match must survive cosmetic differences)
+
+    func testDeviceNameExactMatch() {
+        XCTAssertEqual(DiscoveryLogic.normalizedDeviceName("Nathan's MacBook Pro"),
+                       DiscoveryLogic.normalizedDeviceName("Nathan's MacBook Pro"))
+    }
+
+    func testDeviceNameCurlyVsStraightApostrophe() {
+        // Spotify may report a straight apostrophe while macOS uses the curly U+2019.
+        XCTAssertEqual(DiscoveryLogic.normalizedDeviceName("Nathan\u{2019}s MacBook Pro"),
+                       DiscoveryLogic.normalizedDeviceName("Nathan's MacBook Pro"))
+    }
+
+    func testDeviceNameDropsCollisionSuffix() {
+        // macOS appends " (2)" on name collisions; Spotify often omits it.
+        XCTAssertEqual(DiscoveryLogic.normalizedDeviceName("Nathan\u{2019}s MacBook Pro (2)"),
+                       DiscoveryLogic.normalizedDeviceName("Nathan's MacBook Pro"))
+    }
+
+    func testDeviceNameCaseInsensitive() {
+        XCTAssertEqual(DiscoveryLogic.normalizedDeviceName("NATHAN\u{2019}s MacBook Pro (2)"),
+                       DiscoveryLogic.normalizedDeviceName("nathan's macbook pro"))
+    }
+
+    func testDeviceNameDistinctComputersStillDiffer() {
+        // Two genuinely different Macs must NOT normalize to the same value.
+        XCTAssertNotEqual(DiscoveryLogic.normalizedDeviceName("Nathan's MacBook Pro"),
+                          DiscoveryLogic.normalizedDeviceName("Work MacBook Air"))
+    }
+
     // MARK: Natural-advance gate (reclaim a track that auto-advanced before we held it)
 
     func testNaturalAdvanceWhenNearEnd() {

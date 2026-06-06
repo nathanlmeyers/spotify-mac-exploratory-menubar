@@ -26,12 +26,17 @@ final class AppModel: ObservableObject {
     private var pollTimer: Timer?
     private var lastURI: String?
     private var lastSourceId: String?
-    // Whether Spotify's active Connect device is this Mac. Discovery only runs when true,
-    // so a hand-off to the phone (or a speaker / another computer) stops it from pausing.
-    // Default true so normal local discovery works at startup; only overwritten when known.
-    private var activeDeviceIsLocal = true
+    // Whether Spotify's active Connect device is this Mac. nil = unknown (not yet confirmed).
+    // Discovery treats anything but a confirmed `true` as "do not issue transport", so it never
+    // pauses/skips a phone, speaker, or other computer — including at cold start (still nil) and
+    // right after a hand-off (flips to false on the next poll). Only ever set from a known reading.
+    private var activeDeviceIsLocal: Bool?
     private var deviceRefreshCounter = 0
-    private let deviceRefreshEverySeconds = 3
+    private let deviceRefreshEverySeconds = 2
+    // Monotonic generation so a slow device read can't clobber a newer one (out-of-order writes).
+    private var deviceGen = 0
+    private var appliedDeviceGen = -1
+    private var deviceRefreshInFlight = false
     private var targetMembership: Set<String> = []
     private var statusClear: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
@@ -54,9 +59,8 @@ final class AppModel: ObservableObject {
             targetMembership: { [weak self] in self?.targetMembership ?? [] },
             canAddNow: { [weak self] in self?.canAdd ?? false },
             canRemoveNow: { [weak self] in self?.canRemoveFromSource ?? false },
-            sourceName: { [weak self] in self?.source.playlistName },
             targetName: { [weak self] in self?.settings.targetPlaylistName },
-            activeDeviceIsLocal: { [weak self] in self?.activeDeviceIsLocal ?? true }
+            activeDeviceIsLocal: { [weak self] in self?.activeDeviceIsLocal ?? nil }
         )
         discovery.onStateChange = { [weak self] state in self?.handleReviewState(state) }
         // Toggling discovery off clears the per-URI/loop guards.
@@ -76,6 +80,9 @@ final class AppModel: ObservableObject {
 
     func start() {
         settings.bootstrap()
+        // Confirm the active device on the very first tick so discovery doesn't wait ~2s to learn
+        // playback is local (and can't pause a phone before the first reading lands).
+        deviceRefreshCounter = deviceRefreshEverySeconds
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -110,14 +117,24 @@ final class AppModel: ObservableObject {
     }
 
     /// Cheap, throttled refresh of just the active-device flag (one `/me/player` call).
-    /// Catches mid-song Connect transfers that don't change the track URI.
+    /// Catches mid-song Connect transfers that don't change the track URI. Single-flighted so
+    /// overlapping ticks don't pile up calls.
     private func refreshActiveDevice() async {
-        guard isAuthorized else { return }
-        do {
-            if let local = try await provider.activeDeviceIsLocal() { activeDeviceIsLocal = local }
-        } catch {
-            // Transient error: keep the last-known value rather than flip to a wrong state.
-        }
+        guard isAuthorized, !deviceRefreshInFlight else { return }
+        deviceRefreshInFlight = true
+        defer { deviceRefreshInFlight = false }
+        deviceGen += 1; let gen = deviceGen
+        do { applyDeviceResult(try await provider.activeDeviceIsLocal(), gen: gen) }
+        catch { /* transient error: keep the last-known value rather than flip to a wrong state */ }
+    }
+
+    /// Apply a device reading. Ordered by `gen` so a slower read (e.g. refreshSource's, which has
+    /// extra round-trips) can't resurrect a stale value over a newer one. nil (no active device /
+    /// 204 / unknown) keeps the last known value rather than clobbering it.
+    private func applyDeviceResult(_ local: Bool?, gen: Int) {
+        guard gen > appliedDeviceGen else { return }
+        appliedDeviceGen = gen
+        if let local { activeDeviceIsLocal = local }
     }
 
     func refreshAfterLogin() async {
@@ -134,12 +151,13 @@ final class AppModel: ObservableObject {
 
     func refreshSource() async {
         guard isAuthorized else { source = .none; displayArtists = []; displayArtistsURI = nil; return }
+        deviceGen += 1; let gen = deviceGen
         do {
             let result = try await provider.currentSourceAndArtists()
             source = result.source
             displayArtists = result.artists
             displayArtistsURI = result.trackURI
-            if let local = result.deviceIsLocal { activeDeviceIsLocal = local }
+            applyDeviceResult(result.deviceIsLocal, gen: gen)
         } catch { source = .none }
         // A genuine source-playlist change starts a fresh discovery sweep.
         if let id = source.playlistId, id != lastSourceId {

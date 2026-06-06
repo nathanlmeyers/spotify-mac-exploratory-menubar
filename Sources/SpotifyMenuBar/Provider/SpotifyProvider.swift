@@ -80,11 +80,13 @@ final class SpotifyProvider: MusicProvider {
 
     /// True only when the active Connect device is THIS Mac's desktop app: it must be a
     /// Computer whose name matches this Mac. Phones/speakers and other computers → false.
+    /// Names are normalized (apostrophe/case/accents/" (n)" suffix) so a cosmetic difference
+    /// between Spotify's name and the macOS computer name can't silently disable discovery.
     private static func deviceIsThisMac(_ device: PlaybackDevice) -> Bool {
         guard device.isActive, device.type == "Computer",
               let local = localComputerName, let name = device.name,
               !local.isEmpty, !name.isEmpty else { return false }
-        return name.caseInsensitiveCompare(local) == .orderedSame
+        return DiscoveryLogic.normalizedDeviceName(name) == DiscoveryLogic.normalizedDeviceName(local)
     }
 
     func playlistContains(playlistId: String, trackURI: String) async throws -> Bool {
