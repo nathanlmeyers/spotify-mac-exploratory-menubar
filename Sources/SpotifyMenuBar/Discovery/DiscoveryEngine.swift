@@ -179,7 +179,14 @@ final class DiscoveryEngine {
             provider.pause()
             activeURI = expectedA
             if let kind = autoSkipKind(np, source) { performAutoSkip(np, source, kind: kind) }
-            else { enterHolding(provider.nowPlaying() ?? np) }
+            else {
+                // previous() restarted the track near 0:00; seek to its end so the held panel
+                // reflects a song that just finished, then hold the post-seek paused snapshot.
+                if np.durationSeconds > minHoldableDuration {
+                    provider.seek(to: max(0, np.durationSeconds - lead))
+                }
+                enterHolding(expectedURI: expectedA, fallback: provider.nowPlaying() ?? np)
+            }
             return
         }
         if attempts < maxReclaimAttempts {
@@ -197,7 +204,7 @@ final class DiscoveryEngine {
         } else {
             provider.pause()
             activeURI = np.uri
-            enterHolding(provider.nowPlaying() ?? np)
+            enterHolding(expectedURI: np.uri, fallback: np)
         }
     }
 
@@ -279,7 +286,7 @@ final class DiscoveryEngine {
            (np.durationSeconds - np.positionSeconds) <= lead {
             invalidateTimer()
             provider.pause()
-            enterHolding(provider.nowPlaying() ?? np)
+            enterHolding(expectedURI: np.uri, fallback: np)
             return
         }
         armPrecisePause(np)   // re-arm against fresh polled position (handles seek + drift)
@@ -302,7 +309,7 @@ final class DiscoveryEngine {
         if live.uri == uri {
             DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")
             provider.pause()
-            enterHolding(provider.nowPlaying() ?? live)
+            enterHolding(expectedURI: uri, fallback: live)
         } else {
             // Missed the pre-emptive pause (latency/crossfade) and the track already advanced.
             // Reclaim the track we were watching rather than holding/skipping its successor.
@@ -310,7 +317,24 @@ final class DiscoveryEngine {
         }
     }
 
-    private func enterHolding(_ np: NowPlaying) {
+    /// Commit a hold, but only on a snapshot whose identity matches the track we intend to
+    /// review. The held snapshot drives both the panel display and the Add/Remove/Skip URI, so
+    /// it must never be the *successor* — which is what a now-playing read returns when our pause
+    /// landed a hair too late and Spotify already advanced. In that case we paused the wrong track,
+    /// so we recover the intended one (reclaim) instead of ever displaying/judging the wrong song.
+    private func enterHolding(expectedURI: String, fallback: NowPlaying) {
+        let fresh = provider.nowPlaying()
+        if let fresh, fresh.uri != expectedURI {
+            // We paused the successor, not the track we were reviewing. Step back to recover it.
+            DebugLog.log("discovery: hold aborted — expected [\(expectedURI)] but now on \"\(fresh.name)\" [\(fresh.uri)]; reclaiming")
+            beginReclaim(expectedA: expectedURI, source: lastSource)
+            return
+        }
+        // fresh matches → real paused snapshot; fresh nil → conservative pre-pause snapshot.
+        commitHold((fresh?.uri == expectedURI ? fresh : nil) ?? fallback)
+    }
+
+    private func commitHold(_ np: NowPlaying) {
         invalidateTimer()
         activeURI = np.uri
         DebugLog.log("discovery: HELD \"\(np.name)\" [\(np.uri)]")
