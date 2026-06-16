@@ -47,11 +47,11 @@ final class SpotifyProvider: MusicProvider {
         try await currentSourceAndArtists().source
     }
 
-    /// Source context, the currently-playing artist list, and whether the active Connect
-    /// device is this Mac (one API call). `deviceIsLocal` is nil when unknown.
+    /// Source context, the currently-playing artist list, and whether playback is on this Mac
+    /// (one API call). `deviceIsLocal` is nil when we can't tell. See `resolveLocality`.
     func currentSourceAndArtists() async throws -> (source: SourceContext, artists: [String], trackURI: String?, deviceIsLocal: Bool?) {
-        guard let cp = try await api.currentContext() else { return (.none, [], nil, nil) }
-        let deviceIsLocal = cp.device.map { Self.deviceIsThisMac($0) }
+        guard let cp = try await api.currentContext() else { return (.none, [], nil, resolveLocality(nil)) }
+        let deviceIsLocal = resolveLocality(cp.device)
         guard cp.contextType == "playlist", let uri = cp.contextURI else {
             return (.none, cp.artistNames, cp.trackURI, deviceIsLocal) // album / artist / liked / queue
         }
@@ -66,12 +66,28 @@ final class SpotifyProvider: MusicProvider {
         return (source, cp.artistNames, cp.trackURI, deviceIsLocal)
     }
 
-    /// Whether the active Connect device is this Mac (one lightweight `/me/player` call,
-    /// no playlist resolution). nil when unknown (no active device / not logged in).
-    /// Used by the periodic poll to catch mid-song transfers that don't change the track.
+    /// Whether playback is on this Mac (one lightweight `/me/player` call, no playlist
+    /// resolution). nil when we can't tell. Used by the periodic poll to catch mid-song
+    /// transfers that don't change the track. See `resolveLocality`.
     func activeDeviceIsLocal() async throws -> Bool? {
-        guard let cp = try await api.currentContext() else { return nil }
-        return cp.device.map { Self.deviceIsThisMac($0) }
+        let cp = try await api.currentContext()
+        return resolveLocality(cp?.device)
+    }
+
+    /// Whether playback is on THIS Mac. Returns true when the active Connect device is this
+    /// Mac, OR when no active *remote* device claims the session and the local desktop app is
+    /// actually playing here (a hand-off to a phone/speaker/other computer always appears as an
+    /// active remote device, so its absence means the audio is local). nil only when we can't
+    /// tell (no remote device AND the local app isn't playing).
+    private func resolveLocality(_ device: PlaybackDevice?) -> Bool? {
+        if let device, device.isActive, !Self.deviceIsThisMac(device) { return false } // active remote device
+        if let device, Self.deviceIsThisMac(device) { return true }                    // active = this Mac
+        // No active remote device. If the desktop app is playing, the audio is on this Mac.
+        if local.isAppRunning, let np = local.nowPlaying(), np.isPlaying {
+            DebugLog.log("device: no active Connect device; local app playing → treating as local")
+            return true
+        }
+        return nil
     }
 
     /// This Mac's name, as Spotify reports it for the desktop device

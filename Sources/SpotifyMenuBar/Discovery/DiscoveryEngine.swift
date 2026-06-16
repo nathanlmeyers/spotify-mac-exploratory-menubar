@@ -51,7 +51,8 @@ final class DiscoveryEngine {
     private let canAddNow: () -> Bool
     private let canRemoveNow: () -> Bool
     private let targetName: () -> String?
-    // Whether playback is on this Mac: true = confirmed local, false = confirmed remote, nil =
+    // Whether playback is on this Mac: true = confirmed local (active Connect device is this Mac,
+    // or no remote device and the desktop app is playing here), false = confirmed remote, nil =
     // unknown (not yet confirmed). Discovery issues transport (pause/next/previous) ONLY on a
     // confirmed `true`, so it never reaches a phone/speaker/other computer or an unconfirmed device.
     private let activeDeviceIsLocal: () -> Bool?

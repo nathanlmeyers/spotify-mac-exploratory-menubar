@@ -26,10 +26,12 @@ final class AppModel: ObservableObject {
     private var pollTimer: Timer?
     private var lastURI: String?
     private var lastSourceId: String?
-    // Whether Spotify's active Connect device is this Mac. nil = unknown (not yet confirmed).
-    // Discovery treats anything but a confirmed `true` as "do not issue transport", so it never
-    // pauses/skips a phone, speaker, or other computer — including at cold start (still nil) and
-    // right after a hand-off (flips to false on the next poll). Only ever set from a known reading.
+    // Whether playback is on this Mac. nil = unknown (not yet confirmed). Local means the active
+    // Connect device is this Mac OR no remote device claims the session and the desktop app is
+    // playing here (see SpotifyProvider.resolveLocality). Discovery treats anything but a confirmed
+    // `true` as "do not issue transport", so it never pauses/skips a phone, speaker, or other
+    // computer — including at cold start (still nil) and right after a hand-off (flips to false on
+    // the next poll). Only ever set from a known reading.
     private var activeDeviceIsLocal: Bool?
     // Wall-clock time of the last confirmed device reading. Used to age out a stale flag:
     // discovery must only act on a *recently* confirmed reading, so a value left over from
