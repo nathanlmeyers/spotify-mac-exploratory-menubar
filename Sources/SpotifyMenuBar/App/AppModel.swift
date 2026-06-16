@@ -31,8 +31,18 @@ final class AppModel: ObservableObject {
     // pauses/skips a phone, speaker, or other computer — including at cold start (still nil) and
     // right after a hand-off (flips to false on the next poll). Only ever set from a known reading.
     private var activeDeviceIsLocal: Bool?
+    // Wall-clock time of the last confirmed device reading. Used to age out a stale flag:
+    // discovery must only act on a *recently* confirmed reading, so a value left over from
+    // before sleep (or from a run of failed reads) can never authorize transport. Wall clock
+    // (not systemUptime) is deliberate — it advances across sleep, so a post-wake reading
+    // is automatically "old."
+    private var lastDeviceConfirmedAt: Date?
+    // A device reading older than this is treated as unknown (nil), never as actionable local.
+    private let deviceFlagMaxAge: TimeInterval = 3.0
     private var deviceRefreshCounter = 0
-    private let deviceRefreshEverySeconds = 2
+    private let deviceRefreshEverySeconds = 1
+    // Wall-clock time of the previous tick, to detect a long gap (sleep/stall) and force device re-validation.
+    private var lastTickAt: Date?
     // Monotonic generation so a slow device read can't clobber a newer one (out-of-order writes).
     private var deviceGen = 0
     private var appliedDeviceGen = -1
@@ -60,7 +70,7 @@ final class AppModel: ObservableObject {
             canAddNow: { [weak self] in self?.canAdd ?? false },
             canRemoveNow: { [weak self] in self?.canRemoveFromSource ?? false },
             targetName: { [weak self] in self?.settings.targetPlaylistName },
-            activeDeviceIsLocal: { [weak self] in self?.activeDeviceIsLocal ?? nil }
+            activeDeviceIsLocal: { [weak self] in self?.confirmedLocalFlag() }
         )
         discovery.onStateChange = { [weak self] state in self?.handleReviewState(state) }
         // Toggling discovery off clears the per-URI/loop guards.
@@ -91,6 +101,17 @@ final class AppModel: ObservableObject {
     }
 
     private func tick() {
+        // A long gap since the previous tick means the timer didn't fire on schedule — almost
+        // always sleep (lid closed), but also App Nap / a stall. The pre-gap device reading is
+        // now untrustworthy: distrust it immediately and force a refresh this tick so discovery
+        // can't act (skip/pause/grab the session) on a stale flag before the truth lands.
+        let now = Date()
+        if let last = lastTickAt, now.timeIntervalSince(last) > 3.0 {
+            activeDeviceIsLocal = nil
+            deviceRefreshCounter = deviceRefreshEverySeconds
+        }
+        lastTickAt = now
+
         let np = provider.nowPlaying()
         nowPlaying = np
         if np?.uri != lastURI {
@@ -134,7 +155,17 @@ final class AppModel: ObservableObject {
     private func applyDeviceResult(_ local: Bool?, gen: Int) {
         guard gen > appliedDeviceGen else { return }
         appliedDeviceGen = gen
-        if let local { activeDeviceIsLocal = local }
+        if let local { activeDeviceIsLocal = local; lastDeviceConfirmedAt = Date() }
+    }
+
+    /// The device flag as discovery should see it: the cached reading only when it was confirmed
+    /// recently. A stale reading (e.g. left over from before sleep, or a run of failed refreshes)
+    /// returns nil — and discovery treats anything but a confirmed `true` as "issue no transport,"
+    /// so it never skips/pauses/grabs the wrong device on an out-of-date flag.
+    private func confirmedLocalFlag() -> Bool? {
+        guard let local = activeDeviceIsLocal, let at = lastDeviceConfirmedAt,
+              Date().timeIntervalSince(at) <= deviceFlagMaxAge else { return nil }
+        return local
     }
 
     func refreshAfterLogin() async {
