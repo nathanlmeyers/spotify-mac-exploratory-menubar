@@ -88,7 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentedByHold = false   // user-opened: don't let a later non-held transition close it
             holdPanel.present(below: statusItem)
             Task {
-                await model.refreshSource()
+                // Don't re-resolve the source while a hold is active — the held track's
+                // source was frozen at hold time and a fresh read may return 204 (no active
+                // playback while paused), clobbering the resolved source and disabling Remove.
+                if case .held = model.reviewState {} else { await model.refreshSource() }
                 if model.isAuthorized && model.editablePlaylists.isEmpty { await model.loadPlaylists() }
             }
         }
