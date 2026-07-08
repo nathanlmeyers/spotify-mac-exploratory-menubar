@@ -116,8 +116,9 @@ struct NowPlayingView: View {
     // MARK: Held (discovery judge) player
 
     private func heldPlayer(_ held: HeldTrack) -> some View {
-        // Use live playback if it's still the held track (it's paused there), else the snapshot.
-        let np = (model.nowPlaying?.uri == held.snapshot.uri ? model.nowPlaying : nil) ?? held.snapshot
+        // displayTrack already resolves to the held snapshot (merged with live playback when
+        // it's still the same track); the ?? only discharges the optional type.
+        let np = model.displayTrack ?? held.snapshot
         return VStack(alignment: .leading, spacing: 12) {
             Label("Held for review", systemImage: "pause.circle.fill")
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
@@ -193,19 +194,16 @@ struct NowPlayingView: View {
 
     private var curationNormal: some View {
         HStack(spacing: 10) {
-            Button { model.removeCurrentFromSource() } label: {
-                Label("Remove", systemImage: "minus.circle.fill").frame(maxWidth: .infinity)
+            curationButton("Remove", icon: "minus.circle.fill", tint: .red,
+                           disabled: !model.canRemoveFromSource,
+                           help: model.removeDisabledReason ?? "Remove from \(model.source.playlistName ?? "source")") {
+                model.removeCurrentFromSource()
             }
-            .tint(.red)
-            .disabled(!model.canRemoveFromSource)
-            .help(model.removeDisabledReason ?? "Remove from \(model.source.playlistName ?? "source")")
-
-            Button { model.addCurrentToTarget() } label: {
-                Label("Add", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+            curationButton("Add", icon: "plus.circle.fill", tint: .green,
+                           disabled: !model.canAdd,
+                           help: model.addDisabledReason ?? "Add to \(model.settings.targetPlaylistName ?? "target")") {
+                model.addCurrentToTarget()
             }
-            .tint(.green)
-            .disabled(!model.canAdd)
-            .help(model.addDisabledReason ?? "Add to \(model.settings.targetPlaylistName ?? "target")")
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
@@ -214,28 +212,34 @@ struct NowPlayingView: View {
     private func curationHeld(_ held: HeldTrack) -> some View {
         let canRemove = model.canRemoveFromSource
         return HStack(spacing: 8) {
-            Button { model.heldRemove() } label: {
-                Label("Remove", systemImage: "minus.circle.fill").frame(maxWidth: .infinity)
+            curationButton("Remove", icon: "minus.circle.fill", tint: .red,
+                           disabled: !canRemove,
+                           help: canRemove ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove")) {
+                model.heldRemove()
             }
-            .tint(.red)
-            .disabled(!canRemove)
-            .help(canRemove ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove"))
-
-            Button { model.heldAdd() } label: {
-                Label("Add", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+            curationButton("Add", icon: "plus.circle.fill", tint: .green,
+                           disabled: !held.canAdd,
+                           help: held.canAdd ? "Add to \(held.targetName ?? "target")" : (model.addDisabledReason ?? "Can't add")) {
+                model.heldAdd()
             }
-            .tint(.green)
-            .disabled(!held.canAdd)
-            .help(held.canAdd ? "Add to \(held.targetName ?? "target")" : (model.addDisabledReason ?? "Can't add"))
-
-            Button { model.heldSkip() } label: {
-                Label("Next", systemImage: "forward.fill").frame(maxWidth: .infinity)
+            curationButton("Next", icon: "forward.fill", tint: .secondary,
+                           help: "Skip to the next track without adding or removing") {
+                model.heldSkip()
             }
-            .tint(.secondary)
-            .help("Skip to the next track without adding or removing")
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
+    }
+
+    private func curationButton(_ title: String, icon: String, tint: Color,
+                                disabled: Bool = false, help: String,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon).frame(maxWidth: .infinity)
+        }
+        .tint(tint)
+        .disabled(disabled)
+        .help(help)
     }
 
     @ViewBuilder private var statusLine: some View {

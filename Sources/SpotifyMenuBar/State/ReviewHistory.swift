@@ -32,13 +32,6 @@ final class ReviewHistory {
         store.seenBySource[sourceId]?.contains(uri) ?? false
     }
 
-    func clearReviewHistory() {
-        store.seenBySource.removeAll()
-        save()
-    }
-
-    var reviewedCount: Int { store.seenBySource.values.reduce(0) { $0 + $1.count } }
-
     // MARK: Target membership cache (duplicate prevention)
     func cachedMembership(targetId: String) -> Set<String>? {
         store.targetMembership[targetId]

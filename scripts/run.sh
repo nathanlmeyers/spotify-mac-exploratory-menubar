@@ -37,6 +37,10 @@ echo "Building (Debug)…"
 xcodebuild -project SpotifyMenuBar.xcodeproj -scheme SpotifyMenuBar -configuration Debug build
 
 echo "Launching…"
-open ~/Library/Developer/Xcode/DerivedData/SpotifyMenuBar-*/Build/Products/Debug/SpotifyMenuBar.app
+# Resolve THIS project's build product — a DerivedData glob would match (and launch)
+# the builds of every other checkout/worktree of this app on the machine.
+BUILT_DIR="$(xcodebuild -project SpotifyMenuBar.xcodeproj -scheme SpotifyMenuBar -configuration Debug \
+  -showBuildSettings 2>/dev/null | awk -F' = ' '/ TARGET_BUILD_DIR =/ {print $2; exit}')"
+open "$BUILT_DIR/SpotifyMenuBar.app"
 
 echo "Done. Look for the icon in your menu bar."

@@ -40,9 +40,9 @@ final class AppModel: ObservableObject {
     // is automatically "old."
     private var lastDeviceConfirmedAt: Date?
     // A device reading older than this is treated as unknown (nil), never as actionable local.
+    // Also the tick-gap threshold for distrusting a pre-sleep reading — the two must stay
+    // equal so a reading that survives a gap is by definition fresh enough to act on.
     private let deviceFlagMaxAge: TimeInterval = 3.0
-    private var deviceRefreshCounter = 0
-    private let deviceRefreshEverySeconds = 1
     // Wall-clock time of the previous tick, to detect a long gap (sleep/stall) and force device re-validation.
     private var lastTickAt: Date?
     // Monotonic generation so a slow device read can't clobber a newer one (out-of-order writes).
@@ -70,7 +70,6 @@ final class AppModel: ObservableObject {
             history: history,
             targetMembership: { [weak self] in self?.targetMembership ?? [] },
             canAddNow: { [weak self] in self?.canAdd ?? false },
-            canRemoveNow: { [weak self] in self?.canRemoveFromSource ?? false },
             targetName: { [weak self] in self?.settings.targetPlaylistName },
             activeDeviceIsLocal: { [weak self] in self?.confirmedLocalFlag() }
         )
@@ -92,9 +91,6 @@ final class AppModel: ObservableObject {
 
     func start() {
         settings.bootstrap()
-        // Confirm the active device on the very first tick so discovery doesn't wait ~2s to learn
-        // playback is local (and can't pause a phone before the first reading lands).
-        deviceRefreshCounter = deviceRefreshEverySeconds
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -105,17 +101,18 @@ final class AppModel: ObservableObject {
     private func tick() {
         // A long gap since the previous tick means the timer didn't fire on schedule — almost
         // always sleep (lid closed), but also App Nap / a stall. The pre-gap device reading is
-        // now untrustworthy: distrust it immediately and force a refresh this tick so discovery
-        // can't act (skip/pause/grab the session) on a stale flag before the truth lands.
+        // now untrustworthy: distrust it immediately so discovery can't act (skip/pause/grab
+        // the session) on a stale flag before the per-tick refresh below lands the truth.
         let now = Date()
-        if let last = lastTickAt, now.timeIntervalSince(last) > 3.0 {
+        if let last = lastTickAt, now.timeIntervalSince(last) > deviceFlagMaxAge {
             activeDeviceIsLocal = nil
-            deviceRefreshCounter = deviceRefreshEverySeconds
         }
         lastTickAt = now
 
         let np = provider.nowPlaying()
-        nowPlaying = np
+        // Only publish genuine changes: while parked (a hold) or idle the snapshot is
+        // value-equal every tick, and re-publishing would re-render the panel and title 1x/s.
+        if np != nowPlaying { nowPlaying = np }
         if np?.uri != lastURI {
             lastURI = np?.uri
             if isAuthorized, np != nil {
@@ -125,16 +122,11 @@ final class AppModel: ObservableObject {
             }
         }
         // The active device can change without the track changing (a mid-song Spotify Connect
-        // hand-off). Refresh the device flag on a short cadence while discovery is armed and
-        // something is playing, so we stop pausing promptly when playback leaves this Mac.
+        // hand-off). Refresh the device flag every tick while discovery is armed and something
+        // is playing, so we stop pausing promptly when playback leaves this Mac. Single-flighted
+        // inside refreshActiveDevice, so ticks can't pile up calls.
         if isAuthorized, settings.discoveryEnabled, np != nil {
-            deviceRefreshCounter += 1
-            if deviceRefreshCounter >= deviceRefreshEverySeconds {
-                deviceRefreshCounter = 0
-                Task { await refreshActiveDevice() }
-            }
-        } else {
-            deviceRefreshCounter = 0
+            Task { await refreshActiveDevice() }
         }
         discovery.onTick(np: np, source: source)
     }
@@ -171,9 +163,11 @@ final class AppModel: ObservableObject {
     }
 
     func refreshAfterLogin() async {
-        await loadPlaylists()
-        await refreshSource()
-        await loadTargetMembership(force: true)
+        // Independent fetches — overlap the network round-trips.
+        async let playlists: Void = loadPlaylists()
+        async let sourceRefresh: Void = refreshSource()
+        async let membership: Void = loadTargetMembership(force: true)
+        _ = await (playlists, sourceRefresh, membership)
     }
 
     func loadPlaylists() async {
@@ -197,6 +191,19 @@ final class AppModel: ObservableObject {
             lastSourceId = id
             discovery.reset()
         }
+    }
+
+    /// The track the UI (menu bar title, panels) should display: while a review is held,
+    /// the held snapshot — merged with the live read when it's still the same track, so
+    /// position/isPlaying stay fresh — otherwise live now-playing. Keeps a transient
+    /// successor read (crossfade flip, late pause, reclaim in flight) from ever naming
+    /// the NEXT song while the user is reviewing the held one.
+    var displayTrack: NowPlaying? {
+        if case .held(let held) = reviewState {
+            if let np = nowPlaying, np.uri == held.snapshot.uri { return np }
+            return held.snapshot
+        }
+        return nowPlaying
     }
 
     /// Artist line for display: the full Web API artist list (incl. features) when it
@@ -287,6 +294,7 @@ final class AppModel: ObservableObject {
     func login() { auth.beginLogin() }
     func logout() {
         auth.logout()
+        provider.resetCaches()   // user-scoped caches (user id, playlist info) must not leak accounts
         editablePlaylists = []
         source = .none
         targetMembership = []
@@ -327,25 +335,18 @@ final class AppModel: ObservableObject {
 
     // MARK: Discovery held actions
 
-    func heldAdd() {
-        guard case .held(let held) = reviewState else { return }
-        let uri = held.snapshot.uri
-        let sourceCtx = source
-        discovery.finishHold(judgedURI: uri, sourceId: sourceCtx.playlistId)   // advance immediately
-        Task { await performAdd(uri: uri, sourceCtx: sourceCtx) }
-    }
+    func heldAdd() { resolveHeld { await self.performAdd(uri: $0, sourceCtx: $1) } }
+    func heldRemove() { resolveHeld { await self.performRemoveFromSource(uri: $0, sourceCtx: $1) } }
+    func heldSkip() { resolveHeld() }
 
-    func heldRemove() {
+    /// Resolve the held review: advance playback immediately (finishHold), then run the
+    /// curation action (if any) against the held snapshot's URI and the frozen source.
+    private func resolveHeld(then action: ((String, SourceContext) async -> Bool)? = nil) {
         guard case .held(let held) = reviewState else { return }
         let uri = held.snapshot.uri
         let sourceCtx = source
         discovery.finishHold(judgedURI: uri, sourceId: sourceCtx.playlistId)
-        Task { await performRemoveFromSource(uri: uri, sourceCtx: sourceCtx) }
-    }
-
-    func heldSkip() {
-        guard case .held(let held) = reviewState else { return }
-        discovery.finishHold(judgedURI: held.snapshot.uri, sourceId: source.playlistId)
+        if let action { Task { _ = await action(uri, sourceCtx) } }
     }
 
     // MARK: Curation core (URI-explicit; shared by buttons + held actions)

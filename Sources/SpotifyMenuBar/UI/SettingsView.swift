@@ -127,11 +127,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("Discovery mode")
-        } footer: {
-            if settings.discoveryEnabled {
-                Text("Hold-and-judge is still being finalized; your preferences are saved now.")
-                    .font(.caption)
-            }
         }
     }
 

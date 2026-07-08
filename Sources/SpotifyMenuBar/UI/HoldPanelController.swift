@@ -15,10 +15,6 @@ final class HoldPanelController {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
-    func toggle(below statusItem: NSStatusItem) {
-        if isVisible { dismiss() } else { present(below: statusItem) }
-    }
-
     func present(below statusItem: NSStatusItem) {
         let panel = ensurePanel()
         position(panel, below: statusItem)

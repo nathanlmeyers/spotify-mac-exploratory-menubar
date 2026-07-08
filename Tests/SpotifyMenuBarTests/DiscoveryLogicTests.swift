@@ -176,4 +176,48 @@ final class DiscoveryLogicTests: XCTestCase {
         XCTAssertFalse(DiscoveryLogic.isNaturalAdvance(
             prevRemaining: 0.5, prevDuration: 2, crossfadeWindow: 13, minHoldableDuration: 3))
     }
+
+    // MARK: Departure classifier (watched/held track left us — runoff vs deliberate)
+
+    private let held = "spotify:track:held"
+
+    private func reclaimDeparture(prevURI: String?, playing: Bool, remaining: Double,
+                                  duration: Double = 200) -> Bool {
+        DiscoveryLogic.shouldReclaimDeparture(
+            prevURI: prevURI, prevWasPlaying: playing,
+            prevRemaining: remaining, prevDuration: duration,
+            expectedURI: held, crossfadeWindow: 13, minHoldableDuration: 3)
+    }
+
+    func testDepartureReclaimedOnRunoff() {
+        // The pause didn't take: last tick showed the expected track playing 1s from its end.
+        XCTAssertTrue(reclaimDeparture(prevURI: held, playing: true, remaining: 1.0))
+    }
+
+    func testDepartureReclaimedOnRelistenRunoff() {
+        // Re-listen tail at the poll-granularity worst case (re-pin window edge).
+        XCTAssertTrue(reclaimDeparture(prevURI: held, playing: true, remaining: 2.3))
+    }
+
+    func testDepartureReleasedWhenParkedPaused() {
+        // Parked (paused) track changed: the user picked another song in the Spotify app.
+        // Release — never fight a deliberate selection. Applies to holds AND paused watching.
+        XCTAssertFalse(reclaimDeparture(prevURI: held, playing: false, remaining: 1.3))
+    }
+
+    func testDepartureReleasedOnMidSongSkip() {
+        // Deliberate skip far from the end (e.g. after scrubbing back during a re-listen).
+        XCTAssertFalse(reclaimDeparture(prevURI: held, playing: true, remaining: 60))
+    }
+
+    func testDepartureReleasedWhenPrevAlreadySuccessor() {
+        // Post-sleep/gap: by the time we look, the previous tick already showed the
+        // successor (or nothing) — too late to know what happened; release.
+        XCTAssertFalse(reclaimDeparture(prevURI: "spotify:track:successor", playing: true, remaining: 1.0))
+        XCTAssertFalse(reclaimDeparture(prevURI: nil, playing: true, remaining: 1.0))
+    }
+
+    func testDepartureReleasedForShortInterstitial() {
+        XCTAssertFalse(reclaimDeparture(prevURI: held, playing: true, remaining: 0.5, duration: 2))
+    }
 }

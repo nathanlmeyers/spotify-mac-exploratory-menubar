@@ -48,6 +48,26 @@ enum DiscoveryLogic {
         return prevRemaining <= crossfadeWindow
     }
 
+    /// The one classifier for "the track under watch/review left us — runoff or deliberate?"
+    /// True (reclaim) only when the last observation showed the expected track itself still
+    /// playing near its end — a runoff (a pause that didn't take, a re-listen that reached
+    /// the end, or an auto-advance we didn't pre-empt). A parked-paused track that changed
+    /// (the user deliberately picked something else in the Spotify app) or a far-from-end
+    /// change is released instead — reclaiming there would fight the user.
+    static func shouldReclaimDeparture(prevURI: String?,
+                                       prevWasPlaying: Bool,
+                                       prevRemaining: Double,
+                                       prevDuration: Double,
+                                       expectedURI: String,
+                                       crossfadeWindow: Double,
+                                       minHoldableDuration: Double) -> Bool {
+        guard prevURI == expectedURI, prevWasPlaying else { return false }
+        return isNaturalAdvance(prevRemaining: prevRemaining,
+                                prevDuration: prevDuration,
+                                crossfadeWindow: crossfadeWindow,
+                                minHoldableDuration: minHoldableDuration)
+    }
+
     /// True when the playback source IS the playlist we curate into. Discovery must not
     /// run here: every track is trivially "already in target", so auto-skip-and-remove
     /// would walk the playlist deleting it. Nil ids never match.
