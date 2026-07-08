@@ -95,11 +95,12 @@ final class AppModel: ObservableObject {
         if state == .nothingNew { setStatus("Nothing new to review") }
     }
 
-    /// The source for a held track: prefer a later live source only when it is confirmed for the
-    /// held URI, else use the source frozen at hold time. Never fall through to the successor.
+    /// The source for a held track: prefer the source frozen at hold time (authoritative for
+    /// the held track), falling back to the live source when the frozen source is nil (e.g.
+    /// the hold raced source resolution). Never fall through to the successor.
     private func heldSourceContext(_ held: HeldTrack) -> SourceContext? {
-        if source.trackURI == held.snapshot.uri { return source }
         if held.source?.trackURI == held.snapshot.uri { return held.source }
+        if source.trackURI == held.snapshot.uri { return source }
         return nil
     }
 
