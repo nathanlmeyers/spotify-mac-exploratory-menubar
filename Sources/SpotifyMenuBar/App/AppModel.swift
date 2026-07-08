@@ -49,6 +49,14 @@ final class AppModel: ObservableObject {
     private var deviceGen = 0
     private var appliedDeviceGen = -1
     private var deviceRefreshInFlight = false
+    // A track's source can fail to resolve on its first (URI-change) refresh when that read
+    // races a hold/slip/reclaim transient — a just-paused track briefly drops its playlist
+    // context from /me/player. Retry a bounded number of times while the source is unconfirmed
+    // so Remove and the "From" line can catch up; bounded so album/queue playback (which
+    // legitimately has no playlist source) doesn't poll forever. Single-flighted.
+    private var sourceResolveTries = 0
+    private let maxSourceResolveTries = 5
+    private var sourceRefreshInFlight = false
     private var targetMembership: Set<String> = []
     private var statusClear: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
@@ -80,7 +88,20 @@ final class AppModel: ObservableObject {
 
     private func handleReviewState(_ state: ReviewState) {
         reviewState = state
+        // A just-committed hold is paused and settled, so /me/player will now report its
+        // playlist context reliably — give it a fresh budget to (re)confirm the source even
+        // if the hold's initial resolve raced the pause and left Remove/provenance stuck.
+        if case .held = state { sourceResolveTries = 0 }
         if state == .nothingNew { setStatus("Nothing new to review") }
+    }
+
+    /// The "From" playlist for the held panel: the live source when it's confirmed for the held
+    /// track (freshest, and matches the Remove button's own guard so the two never disagree),
+    /// else the name frozen at hold time. Both require the source to be resolved FOR this exact
+    /// track, so the panel can never show the wrong playlist.
+    func heldSourceName(_ held: HeldTrack) -> String? {
+        if source.trackURI == held.snapshot.uri { return source.playlistName }
+        return held.sourceName
     }
 
     var isAuthorized: Bool { auth.isAuthorized }
@@ -115,11 +136,17 @@ final class AppModel: ObservableObject {
         if np != nowPlaying { nowPlaying = np }
         if np?.uri != lastURI {
             lastURI = np?.uri
+            sourceResolveTries = 0
             if isAuthorized, np != nil {
                 Task { await refreshSource() }
             } else {
                 source = .none
             }
+        } else if isAuthorized, let np, source.trackURI != np.uri, sourceResolveTries < maxSourceResolveTries {
+            // Source didn't resolve for the current track (its first refresh raced a hold/slip/
+            // reclaim transient). Retry so Remove / provenance can confirm the playlist.
+            sourceResolveTries += 1
+            Task { await refreshSource() }
         }
         // The active device can change without the track changing (a mid-song Spotify Connect
         // hand-off). Refresh the device flag every tick while discovery is armed and something
@@ -178,6 +205,9 @@ final class AppModel: ObservableObject {
 
     func refreshSource() async {
         guard isAuthorized else { source = .none; displayArtists = []; displayArtistsURI = nil; return }
+        guard !sourceRefreshInFlight else { return }   // don't pile up /me/player calls across ticks
+        sourceRefreshInFlight = true
+        defer { sourceRefreshInFlight = false }
         deviceGen += 1; let gen = deviceGen
         do {
             let result = try await provider.currentSourceAndArtists()
@@ -186,11 +216,19 @@ final class AppModel: ObservableObject {
             displayArtistsURI = result.trackURI
             applyDeviceResult(result.deviceIsLocal, gen: gen)
         } catch { source = .none }
-        // A genuine source-playlist change starts a fresh discovery sweep.
+        // A genuine source-playlist change starts a fresh discovery sweep — but never while a
+        // review is held: finally resolving a held/slipped track's own source (a delayed first
+        // read, not a real playlist change) must not tear down the hold. A real source change
+        // always arrives with a track change and is handled on the next URI change.
         if let id = source.playlistId, id != lastSourceId {
             lastSourceId = id
-            discovery.reset()
+            if !isReviewHeld { discovery.reset() }
         }
+    }
+
+    private var isReviewHeld: Bool {
+        if case .held = reviewState { return true }
+        return false
     }
 
     /// The track the UI (menu bar title, panels) should display: while a review is held,

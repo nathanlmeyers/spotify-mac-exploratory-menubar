@@ -122,7 +122,7 @@ struct NowPlayingView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Label("Held for review", systemImage: "pause.circle.fill")
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
-            trackHeader(np, fromName: held.sourceName)
+            trackHeader(np, fromName: model.heldSourceName(held))
             Scrubber(np: np) { model.seek(to: $0) }
             HStack {
                 Spacer()
