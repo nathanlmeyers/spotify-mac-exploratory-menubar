@@ -210,11 +210,11 @@ struct NowPlayingView: View {
     }
 
     private func curationHeld(_ held: HeldTrack) -> some View {
-        let canRemove = model.canRemoveFromSource
+        let canRemove = model.canRemoveHeld(held)
         return HStack(spacing: 8) {
             curationButton("Remove", icon: "minus.circle.fill", tint: .red,
                            disabled: !canRemove,
-                           help: canRemove ? "Remove from source" : (model.removeDisabledReason ?? "Can't remove")) {
+                           help: canRemove ? "Remove from source" : (model.heldRemoveDisabledReason(held) ?? "Can't remove")) {
                 model.heldRemove()
             }
             curationButton("Add", icon: "plus.circle.fill", tint: .green,

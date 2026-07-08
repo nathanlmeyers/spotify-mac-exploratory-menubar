@@ -95,13 +95,33 @@ final class AppModel: ObservableObject {
         if state == .nothingNew { setStatus("Nothing new to review") }
     }
 
-    /// The "From" playlist for the held panel: the live source when it's confirmed for the held
-    /// track (freshest, and matches the Remove button's own guard so the two never disagree),
-    /// else the name frozen at hold time. Both require the source to be resolved FOR this exact
-    /// track, so the panel can never show the wrong playlist.
+    /// The source for a held track: prefer a later live source only when it is confirmed for the
+    /// held URI, else use the source frozen at hold time. Never fall through to the successor.
+    private func heldSourceContext(_ held: HeldTrack) -> SourceContext? {
+        if source.trackURI == held.snapshot.uri { return source }
+        if held.source?.trackURI == held.snapshot.uri { return held.source }
+        return nil
+    }
+
+    /// The "From" playlist for the held panel. This uses the same held-specific source guard
+    /// as the Remove button/actions so provenance and behavior cannot disagree.
     func heldSourceName(_ held: HeldTrack) -> String? {
-        if source.trackURI == held.snapshot.uri { return source.playlistName }
-        return held.sourceName
+        heldSourceContext(held)?.playlistName
+    }
+
+    func canRemoveHeld(_ held: HeldTrack) -> Bool {
+        guard isAuthorized, held.snapshot.kind.isCuratable, !isBusy,
+              let source = heldSourceContext(held) else { return false }
+        return source.isEditablePlaylist && source.playlistId != nil
+    }
+
+    func heldRemoveDisabledReason(_ held: HeldTrack) -> String? {
+        if !isAuthorized { return "Log in to remove songs." }
+        if !held.snapshot.kind.isCuratable { return reasonForNonTrack(held.snapshot.kind, verb: "remove") }
+        guard let source = heldSourceContext(held) else { return "Confirming this track's playlist…" }
+        if source.playlistId == nil { return "Not playing from a playlist — nothing to remove from." }
+        if !source.isEditablePlaylist { return "You can't edit “\(source.playlistName ?? "this playlist")”." }
+        return nil
     }
 
     var isAuthorized: Bool { auth.isAuthorized }
@@ -382,7 +402,7 @@ final class AppModel: ObservableObject {
     private func resolveHeld(then action: ((String, SourceContext) async -> Bool)? = nil) {
         guard case .held(let held) = reviewState else { return }
         let uri = held.snapshot.uri
-        let sourceCtx = source
+        let sourceCtx = heldSourceContext(held) ?? .none
         discovery.finishHold(judgedURI: uri, sourceId: sourceCtx.playlistId)
         if let action { Task { _ = await action(uri, sourceCtx) } }
     }

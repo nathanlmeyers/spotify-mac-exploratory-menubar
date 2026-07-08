@@ -11,7 +11,7 @@ enum ReviewState: Equatable {
 struct HeldTrack: Equatable {
     let snapshot: NowPlaying
     let canAdd: Bool
-    let sourceName: String?
+    let source: SourceContext?
     let targetName: String?
 }
 
@@ -437,9 +437,9 @@ final class DiscoveryEngine {
         setPhase(.holding(np.uri), publish: .held(HeldTrack(
             snapshot: np,
             canAdd: canAddNow(),
-            // Freeze the provenance from the source confirmed FOR THIS track (nil if the source is
-            // mid-resolution, e.g. just after a reclaim) so the panel never shows another playlist.
-            sourceName: lastSource.trackURI == np.uri ? lastSource.playlistName : nil,
+            // Freeze the source confirmed FOR THIS track (nil if the source is mid-resolution,
+            // e.g. just after a reclaim) so held actions never use a successor's playlist.
+            source: lastSource.trackURI == np.uri ? lastSource : nil,
             targetName: targetName()
         )))
     }
