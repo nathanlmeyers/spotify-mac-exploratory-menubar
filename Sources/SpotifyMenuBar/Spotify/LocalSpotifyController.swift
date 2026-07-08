@@ -8,7 +8,9 @@ final class LocalSpotifyController {
     private var didLogSnapshotKeys = false
 
     var isAppRunning: Bool { bridge.isRunning }
-    var isShuffling: Bool { bridge.shuffling }
+    /// Lightweight "actively playing here" probe (one Apple event, no track snapshot) —
+    /// used by the per-second device-locality refresh.
+    var isPlaying: Bool { bridge.isRunning && bridge.playerState == .playing }
 
     /// Current playback snapshot, or nil if Spotify isn't running / nothing is playing.
     ///

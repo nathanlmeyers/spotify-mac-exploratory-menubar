@@ -1,21 +1,29 @@
 import Foundation
 
-/// Spotify implementation of `MusicProvider`: local app control for playback,
+/// The app's one music-service facade: local app control for playback,
 /// Web API for account/playlist operations.
 @MainActor
-final class SpotifyProvider: MusicProvider {
+final class SpotifyProvider {
     private let local: LocalSpotifyController
     private let api: SpotifyWebAPI
+    // User-scoped caches — cleared on logout (resetCaches) so accounts can't leak into
+    // each other. Playlist info (name/owner/collaborative) essentially never changes
+    // mid-session; entries are refreshed whenever the full playlist list is fetched.
     private var cachedUserId: String?
+    private var cachedPlaylistInfo: [String: Playlist] = [:]
 
     init(local: LocalSpotifyController, api: SpotifyWebAPI) {
         self.local = local
         self.api = api
     }
 
+    func resetCaches() {
+        cachedUserId = nil
+        cachedPlaylistInfo.removeAll()
+    }
+
     // MARK: Local playback
     var isAppRunning: Bool { local.isAppRunning }
-    var isShuffling: Bool { local.isShuffling }
     func nowPlaying() -> NowPlaying? { local.nowPlaying() }
     func playPause() { local.playPause() }
     func pause() { local.pause() }
@@ -38,13 +46,10 @@ final class SpotifyProvider: MusicProvider {
     func editablePlaylists() async throws -> [Playlist] {
         let me = try await currentUserId()
         let all = try await api.allPlaylists()
+        for p in all { cachedPlaylistInfo[p.id] = p }   // freshens the source-info cache too
         let editable = all.filter { $0.isEditable(byUserId: me) }
         DebugLog.log("playlists: total=\(all.count) editable=\(editable.count) me=\(me) sampleOwners=\(all.prefix(6).map { $0.ownerId })")
         return editable
-    }
-
-    func currentSource() async throws -> SourceContext? {
-        try await currentSourceAndArtists().source
     }
 
     /// Source context, the currently-playing artist list, and whether playback is on this Mac
@@ -58,12 +63,21 @@ final class SpotifyProvider: MusicProvider {
         let id = uri.components(separatedBy: ":").last ?? ""
         guard !id.isEmpty else { return (.none, cp.artistNames, cp.trackURI, deviceIsLocal) }
         let me = try await currentUserId()
-        let info = try await api.playlistInfo(id: id)
+        let info = try await playlistInfo(id: id)
         let source = SourceContext(playlistId: id,
                                    playlistName: info.name,
                                    isEditablePlaylist: info.isEditable(byUserId: me),
                                    trackURI: cp.trackURI)
         return (source, cp.artistNames, cp.trackURI, deviceIsLocal)
+    }
+
+    /// Playlist metadata, cached per session — `refreshSource` runs on every track change,
+    /// so an uncached read would refetch the same playlist once per song.
+    private func playlistInfo(id: String) async throws -> Playlist {
+        if let cached = cachedPlaylistInfo[id] { return cached }
+        let info = try await api.playlistInfo(id: id)
+        cachedPlaylistInfo[id] = info
+        return info
     }
 
     /// Whether playback is on this Mac (one lightweight `/me/player` call, no playlist
@@ -83,7 +97,9 @@ final class SpotifyProvider: MusicProvider {
         if let device, device.isActive, !Self.deviceIsThisMac(device) { return false } // active remote device
         if let device, Self.deviceIsThisMac(device) { return true }                    // active = this Mac
         // No active remote device. If the desktop app is playing, the audio is on this Mac.
-        if local.isAppRunning, let np = local.nowPlaying(), np.isPlaying {
+        // (Lightweight probe — one Apple event, not a full now-playing snapshot; this runs
+        // every device refresh, i.e. once per second while discovery is armed.)
+        if local.isPlaying {
             DebugLog.log("device: no active Connect device; local app playing → treating as local")
             return true
         }
@@ -103,10 +119,6 @@ final class SpotifyProvider: MusicProvider {
               let local = localComputerName, let name = device.name,
               !local.isEmpty, !name.isEmpty else { return false }
         return DiscoveryLogic.normalizedDeviceName(name) == DiscoveryLogic.normalizedDeviceName(local)
-    }
-
-    func playlistContains(playlistId: String, trackURI: String) async throws -> Bool {
-        try await api.playlistTrackURIs(id: playlistId).contains(trackURI)
     }
 
     func addTrack(uri: String, toPlaylist playlistId: String) async throws {

@@ -24,8 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
-            forEventClass: AEEventClass(Self.fourCharCode("GURL")),
-            andEventID: AEEventID(Self.fourCharCode("GURL"))
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
         )
     }
 
@@ -43,13 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(openSettings), name: .openSettings, object: nil
         )
 
-        // Keep the menu bar title in sync with playback + the user's preference.
-        model.$nowPlaying.sink { [weak self] _ in self?.updateButtonTitle() }.store(in: &cancellables)
-        // Refresh when the full (featured) artist list arrives a beat after the track changes.
-        model.$displayArtists.sink { [weak self] _ in self?.updateButtonTitle() }.store(in: &cancellables)
-        model.settings.$showTrackTitleInMenuBar.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.updateButtonTitle() }
-        }.store(in: &cancellables)
+        // Keep the menu bar title in sync with everything it renders: playback, the (late-
+        // arriving) featured-artist list, hold state, and the user's preference. One async
+        // hop so every update reads settled values (@Published fires on willSet).
+        Publishers.MergeMany(
+            model.$nowPlaying.map { _ in () }.eraseToAnyPublisher(),
+            model.$displayArtists.map { _ in () }.eraseToAnyPublisher(),
+            model.$reviewState.map { _ in () }.eraseToAnyPublisher(),
+            model.settings.$showTrackTitleInMenuBar.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in self?.updateButtonTitle() }
+        .store(in: &cancellables)
 
         // Discovery hold → fire the configured alerts (panel / badge / sound).
         model.$reviewState
@@ -104,31 +109,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateButtonTitle() {
         guard let button = statusItem?.button else { return }
-        guard model.settings.showTrackTitleInMenuBar, let np = model.nowPlaying, !np.name.isEmpty else {
-            button.title = ""
-            return
+        var title = ""
+        if model.settings.showTrackTitleInMenuBar, let np = model.displayTrack, !np.name.isEmpty {
+            title = " " + Self.menuBarText(title: np.name, artists: model.artistText(for: np))
         }
-        button.title = " " + Self.menuBarText(title: np.name, artists: model.artistText(for: np))
+        if button.title != title { button.title = title }
     }
 
     /// "Artist — Title" within `menuBarBudget`. The title is preserved; the artist list is
     /// trimmed (with an ellipsis) to whatever room is left. Falls back to a truncated
-    /// title alone when even that doesn't fit.
+    /// title alone when even that doesn't fit (no room for separator + one artist char).
     static func menuBarText(title: String, artists: String) -> String {
         let sep = " — "
         let artists = artists.trimmingCharacters(in: .whitespaces)
-        guard !artists.isEmpty else {
-            return title.count > menuBarBudget ? String(title.prefix(menuBarBudget - 1)) + "…" : title
-        }
-        // No room for the title + separator + at least one artist char → title only.
         let roomForArtists = menuBarBudget - title.count - sep.count
-        guard roomForArtists >= 1 else {
-            return title.count > menuBarBudget ? String(title.prefix(menuBarBudget - 1)) + "…" : title
+        guard !artists.isEmpty, roomForArtists >= 1 else {
+            return truncated(title, to: menuBarBudget)
         }
-        let shownArtists = artists.count > roomForArtists
-            ? String(artists.prefix(max(1, roomForArtists - 1))) + "…"
-            : artists
-        return shownArtists + sep + title
+        return truncated(artists, to: roomForArtists) + sep + title
+    }
+
+    /// Ellipsis-truncate, always keeping at least one character of the original.
+    private static func truncated(_ s: String, to limit: Int) -> String {
+        s.count > limit ? String(s.prefix(max(1, limit - 1))) + "…" : s
     }
 
     // MARK: Settings
@@ -199,8 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: URL callback
 
     @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
-        let keyword = AEKeyword(Self.fourCharCode("----"))
-        guard let string = event.paramDescriptor(forKeyword: keyword)?.stringValue,
+        guard let string = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: string) else { return }
         handleIncoming(url)
     }
@@ -214,11 +216,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await model.auth.handleCallback(url)
             if model.isAuthorized { await model.refreshAfterLogin() }
         }
-    }
-
-    private static func fourCharCode(_ string: String) -> FourCharCode {
-        var result: FourCharCode = 0
-        for unit in string.utf16 { result = (result << 8) + FourCharCode(unit) }
-        return result
     }
 }

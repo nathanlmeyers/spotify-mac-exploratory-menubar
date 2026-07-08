@@ -26,30 +26,28 @@ final class SpotifyWebAPI {
         return me.id
     }
 
+    /// Spotify's playlist object, shared by the list and single-playlist endpoints.
+    private struct PlaylistDTO: Decodable {
+        let id: String
+        let name: String
+        let uri: String
+        let collaborative: Bool
+        let owner: Owner
+        struct Owner: Decodable { let id: String }
+        var playlist: Playlist {
+            Playlist(id: id, name: name, uri: uri, ownerId: owner.id, collaborative: collaborative)
+        }
+    }
+
     /// All playlists in the user's library (paginated).
     func allPlaylists() async throws -> [Playlist] {
         struct Page: Decodable {
-            struct Item: Decodable {
-                let id: String
-                let name: String
-                let uri: String
-                let collaborative: Bool
-                let owner: Owner
-                struct Owner: Decodable { let id: String }
-            }
-            let items: [Item]
+            let items: [PlaylistDTO]
             let next: String?
         }
         var results: [Playlist] = []
-        var url: URL? = urlForPath("/me/playlists", query: [.init(name: "limit", value: "50")])
-        while let current = url {
-            let page: Page = try await getJSON(absolute: current)
-            results += page.items.map {
-                Playlist(id: $0.id, name: $0.name, uri: $0.uri,
-                         ownerId: $0.owner.id, collaborative: $0.collaborative)
-            }
-            url = page.next.flatMap { URL(string: $0) }
-        }
+        try await paginate(from: urlForPath("/me/playlists", query: [.init(name: "limit", value: "50")]),
+                           next: \Page.next) { results += $0.items.map(\.playlist) }
         return results
     }
 
@@ -66,15 +64,10 @@ final class SpotifyWebAPI {
     /// only that endpoint returns the `device` object — both come back in one call.
     /// Returns nil when there's no active playback session (HTTP 204).
     func currentContext() async throws -> CurrentlyPlaying? {
-        let token = try await auth.validAccessToken()
-        var req = URLRequest(url: urlForPath("/me/player"))
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { return nil }
+        let (data, http) = try await authorizedData(for: urlForPath("/me/player"))
+        guard let http else { return nil }
         if http.statusCode == 204 { return nil }        // no active device / nothing playing
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
-        }
+        try throwIfError("GET /me/player", http, data)
         struct Resp: Decodable {
             struct Device: Decodable {
                 let id: String?
@@ -102,18 +95,9 @@ final class SpotifyWebAPI {
     }
 
     func playlistInfo(id: String) async throws -> Playlist {
-        struct Info: Decodable {
-            let id: String
-            let name: String
-            let uri: String
-            let collaborative: Bool
-            let owner: Owner
-            struct Owner: Decodable { let id: String }
-        }
-        let info: Info = try await getJSON("/playlists/\(id)",
-                                           query: [.init(name: "fields", value: "id,name,uri,collaborative,owner(id)")])
-        return Playlist(id: info.id, name: info.name, uri: info.uri,
-                        ownerId: info.owner.id, collaborative: info.collaborative)
+        let info: PlaylistDTO = try await getJSON("/playlists/\(id)",
+                                                  query: [.init(name: "fields", value: "id,name,uri,collaborative,owner(id)")])
+        return info.playlist
     }
 
     /// All track URIs in a playlist (paginated) — used for duplicate detection.
@@ -131,11 +115,9 @@ final class SpotifyWebAPI {
             let next: String?
         }
         var uris = Set<String>()
-        var url: URL? = urlForPath("/playlists/\(id)/items", query: [.init(name: "limit", value: "100")])
-        while let current = url {
-            let page: Page = try await getJSON(absolute: current)
+        try await paginate(from: urlForPath("/playlists/\(id)/items", query: [.init(name: "limit", value: "100")]),
+                           next: \Page.next) { page in
             for entry in page.items { if let uri = entry.uri { uris.insert(uri) } }
-            url = page.next.flatMap { URL(string: $0) }
         }
         return uris
     }
@@ -171,32 +153,51 @@ final class SpotifyWebAPI {
         return comps.url!
     }
 
+    /// One authorized request: token + Bearer header + optional JSON body. No status check —
+    /// callers that need special-case statuses (204) inspect the response themselves.
+    private func authorizedData(for url: URL, method: String = "GET",
+                                json: Any? = nil) async throws -> (Data, HTTPURLResponse?) {
+        let token = try await auth.validAccessToken()
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let json {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        return (data, resp as? HTTPURLResponse)
+    }
+
     private func getJSON<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         try await getJSON(absolute: urlForPath(path, query: query))
     }
 
     private func getJSON<T: Decodable>(absolute url: URL) async throws -> T {
-        let token = try await auth.validAccessToken()
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        try throwIfError("GET \(url.path)", resp, data)
+        let (data, http) = try await authorizedData(for: url)
+        try throwIfError("GET \(url.path)", http, data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     private func send(_ path: String, method: String, json: Any) async throws {
-        let token = try await auth.validAccessToken()
-        var req = URLRequest(url: urlForPath(path))
-        req.httpMethod = method
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: json)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        try throwIfError("\(method) \(path)", resp, data)
+        let (data, http) = try await authorizedData(for: urlForPath(path), method: method, json: json)
+        try throwIfError("\(method) \(path)", http, data)
     }
 
-    private func throwIfError(_ label: String, _ resp: URLResponse, _ data: Data) throws {
-        guard let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
+    /// Follow a paginated endpoint from `start`, feeding each decoded page to `consume`.
+    private func paginate<Page: Decodable>(from start: URL,
+                                           next: (Page) -> String?,
+                                           _ consume: (Page) -> Void) async throws {
+        var url: URL? = start
+        while let current = url {
+            let page: Page = try await getJSON(absolute: current)
+            consume(page)
+            url = next(page).flatMap { URL(string: $0) }
+        }
+    }
+
+    private func throwIfError(_ label: String, _ http: HTTPURLResponse?, _ data: Data) throws {
+        guard let http, !(200..<300).contains(http.statusCode) else { return }
         let body = String(data: data, encoding: .utf8) ?? ""
         DebugLog.log("API \(label) -> HTTP \(http.statusCode): \(body)")
         throw APIError.http(http.statusCode, Self.message(from: body))

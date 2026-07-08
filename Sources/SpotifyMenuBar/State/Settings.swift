@@ -1,8 +1,7 @@
 import Foundation
 import ServiceManagement
 
-/// User preferences, persisted in UserDefaults. Discovery-mode fields are stored
-/// now and consumed by the discovery engine (Phase 2).
+/// User preferences, persisted in UserDefaults.
 @MainActor
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
@@ -17,7 +16,7 @@ final class Settings: ObservableObject {
     // MARK: Menu bar
     @Published var showTrackTitleInMenuBar: Bool { didSet { d.set(showTrackTitleInMenuBar, forKey: K.showTitle) } }
 
-    // MARK: Discovery (Phase 2)
+    // MARK: Discovery
     @Published var discoveryEnabled: Bool { didSet { d.set(discoveryEnabled, forKey: K.discovery) } }
     @Published var alertAutoOpenPanel: Bool { didSet { d.set(alertAutoOpenPanel, forKey: K.alertPanel) } }
     @Published var alertBadgeIcon: Bool { didSet { d.set(alertBadgeIcon, forKey: K.alertBadge) } }
@@ -33,23 +32,29 @@ final class Settings: ObservableObject {
     }
 
     init() {
-        targetPlaylistId = d.string(forKey: K.targetId)
-        targetPlaylistName = d.string(forKey: K.targetName)
-        removeFromSourceOnAdd = d.bool(forKey: K.moveOnAdd)
-        skipToNextAfterRemove = (d.object(forKey: K.skipAfterRemove) as? Bool) ?? true   // default ON
-        skipToNextAfterAdd = d.bool(forKey: K.skipAfterAdd)                              // default OFF
-        showTrackTitleInMenuBar = d.bool(forKey: K.showTitle)
+        // Local reader so every toggle's default is visible in one column below.
+        let defaults = d
+        func bool(_ key: String, default def: Bool) -> Bool {
+            (defaults.object(forKey: key) as? Bool) ?? def
+        }
 
-        discoveryEnabled = d.bool(forKey: K.discovery)
-        alertAutoOpenPanel = (d.object(forKey: K.alertPanel) as? Bool) ?? true   // default ON
-        alertBadgeIcon = (d.object(forKey: K.alertBadge) as? Bool) ?? true       // default ON (shade icon)
-        alertSound = d.bool(forKey: K.alertSound)
-        skipIfInTarget = d.bool(forKey: K.skipInTarget)
-        skipInTargetAlsoRemove = d.bool(forKey: K.skipInTargetRemove)
-        skipAlreadyReviewed = d.bool(forKey: K.skipReviewed)
-        keepHeldPanelOpen = (d.object(forKey: K.keepHeldOpen) as? Bool) ?? true          // default ON
+        targetPlaylistId = defaults.string(forKey: K.targetId)
+        targetPlaylistName = defaults.string(forKey: K.targetName)
+        removeFromSourceOnAdd = bool(K.moveOnAdd, default: false)
+        skipToNextAfterRemove = bool(K.skipAfterRemove, default: true)
+        skipToNextAfterAdd = bool(K.skipAfterAdd, default: false)
+        showTrackTitleInMenuBar = bool(K.showTitle, default: false)
 
-        launchAtLogin = (d.object(forKey: K.launchAtLogin) as? Bool) ?? true      // default ON (intent)
+        discoveryEnabled = bool(K.discovery, default: false)
+        alertAutoOpenPanel = bool(K.alertPanel, default: true)
+        alertBadgeIcon = bool(K.alertBadge, default: true)
+        alertSound = bool(K.alertSound, default: false)
+        skipIfInTarget = bool(K.skipInTarget, default: false)
+        skipInTargetAlsoRemove = bool(K.skipInTargetRemove, default: false)
+        skipAlreadyReviewed = bool(K.skipReviewed, default: false)
+        keepHeldPanelOpen = bool(K.keepHeldOpen, default: true)
+
+        launchAtLogin = bool(K.launchAtLogin, default: true)
     }
 
     /// Call once at startup to sync the login item to the stored intent.
