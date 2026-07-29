@@ -94,7 +94,20 @@ struct SettingsView: View {
 
     @ViewBuilder private var menuBarSection: some View {
         Section("Menu bar") {
-            Toggle("Show track title next to the icon", isOn: $settings.showTrackTitleInMenuBar)
+            Picker("Show track title", selection: $settings.menuBarTitleMode) {
+                ForEach(MenuBarTitleMode.allCases) { Text($0.label).tag($0) }
+            }
+            Text("A long title can make the menu bar item too wide to fit — macOS then hides it, and the app looks like it isn't running. Showing the title only while a song is held keeps it narrow the rest of the time.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            if settings.menuBarTitleMode != .never {
+                Picker("Maximum width", selection: $settings.menuBarTitleMaxWidth) {
+                    Text("Short").tag(MenuBarTitle.widthOptions[0])
+                    Text("Medium").tag(MenuBarTitle.widthOptions[1])
+                    Text("Long").tag(MenuBarTitle.widthOptions[2])
+                }
+                .help("Pick a narrower width if your menu bar is crowded and the icon still gets hidden.")
+            }
         }
     }
 
@@ -119,10 +132,9 @@ struct SettingsView: View {
                 Group {
                     Text("Auto-skip (don't hold) when:").font(.caption).foregroundStyle(.secondary)
                     Toggle("Song is already in the target playlist", isOn: $settings.skipIfInTarget)
-                    Toggle("…and also remove it from the source", isOn: $settings.skipInTargetAlsoRemove)
-                        .padding(.leading, 16)
-                        .disabled(!settings.skipIfInTarget)
                     Toggle("I've already reviewed the song", isOn: $settings.skipAlreadyReviewed)
+                    Text("Auto-skip only skips. Songs are removed from a playlist only when you press Remove.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         } header: {
@@ -135,6 +147,11 @@ struct SettingsView: View {
     @ViewBuilder private var systemSection: some View {
         Section {
             Toggle("Launch at login", isOn: $settings.launchAtLogin)
+            if BuildInfo.isTransientBuild {
+                Text("Launch at login is unavailable for a debug build — move the app to /Applications first.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text(BuildInfo.shortSummary).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Quit Spotify Menu Bar", role: .destructive) { NSApplication.shared.terminate(nil) }

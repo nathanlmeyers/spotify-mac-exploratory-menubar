@@ -328,16 +328,11 @@ final class DiscoveryEngine {
         visitedThisSweep.insert(uri)
         consecutiveAutoSkips += 1
 
-        // "Skip if in target" with the move option also removes from the source.
-        // Defense-in-depth: never let a *move* delete from the target itself (the onTick
-        // source==target guard already prevents reaching here in that case).
-        if kind == .inTarget, settings.skipInTargetAlsoRemove,
-           source.isEditablePlaylist, let src = source.playlistId,
-           DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
-                                              targetPlaylistId: settings.targetPlaylistId,
-                                              sourceTrackURI: source.trackURI, actedURI: uri, isMove: true) {
-            Task { try? await provider.removeTrack(uri: uri, fromPlaylist: src) }
-        }
+        // Auto-skip SKIPS. It does not delete. Songs leave a playlist only when the user
+        // presses Remove — see UserRemovalIntent, which is the enforcement of that rule.
+        // (This used to also remove from the source under a "move" setting. Running it on
+        // the target playlist itself made every track trivially "already in target" and it
+        // walked the playlist deleting songs; the setting is gone rather than re-guarded.)
         recordJudgment(uri: uri, sourceId: source.playlistId)
 
         actingTicks = 0

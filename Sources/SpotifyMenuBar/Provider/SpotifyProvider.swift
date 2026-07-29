@@ -125,7 +125,19 @@ final class SpotifyProvider {
         try await api.addTrack(uri: uri, toPlaylist: playlistId)
     }
 
-    func removeTrack(uri: String, fromPlaylist playlistId: String) async throws {
-        try await api.removeTrack(uri: uri, fromPlaylist: playlistId)
+    /// Deletes a track from a playlist. Requires a `UserRemovalIntent`, which only
+    /// AppModel's button handlers can construct — so nothing automated can reach here.
+    /// Always logged: this is the one destructive call in the app, and an unlogged
+    /// deletion is invisible in a 400k-line debug log.
+    func removeTrack(uri: String, fromPlaylist playlistId: String,
+                     intent: UserRemovalIntent) async throws {
+        DebugLog.log("REMOVE [\(intent.gesture)] \(uri) from playlist \(playlistId)")
+        do {
+            try await api.removeTrack(uri: uri, fromPlaylist: playlistId, intent: intent)
+            DebugLog.log("REMOVE ok \(uri)")
+        } catch {
+            DebugLog.log("REMOVE FAILED \(uri): \(error.localizedDescription)")
+            throw error
+        }
     }
 }

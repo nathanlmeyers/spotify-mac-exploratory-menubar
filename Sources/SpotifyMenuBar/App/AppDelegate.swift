@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BuildInfo.logStartupBanner()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.makeMenuBarIcon()
@@ -50,7 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.$nowPlaying.map { _ in () }.eraseToAnyPublisher(),
             model.$displayArtists.map { _ in () }.eraseToAnyPublisher(),
             model.$reviewState.map { _ in () }.eraseToAnyPublisher(),
-            model.settings.$showTrackTitleInMenuBar.map { _ in () }.eraseToAnyPublisher()
+            model.settings.$menuBarTitleMode.map { _ in () }.eraseToAnyPublisher(),
+            model.settings.$menuBarTitleMaxWidth.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: DispatchQueue.main)
         .sink { [weak self] in self?.updateButtonTitle() }
@@ -107,34 +109,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = nil   // restore left-click panel behavior
     }
 
-    /// Total character budget for the menu-bar text (excluding the leading space + icon).
-    private static let menuBarBudget = 45
-
     private func updateButtonTitle() {
         guard let button = statusItem?.button else { return }
-        var title = ""
-        if model.settings.showTrackTitleInMenuBar, let np = model.displayTrack, !np.name.isEmpty {
-            title = " " + Self.menuBarText(title: np.name, artists: model.artistText(for: np))
-        }
+        let text = menuBarText(measuredWith: button)
+        let title = text.isEmpty ? "" : " " + text
         if button.title != title { button.title = title }
     }
 
-    /// "Artist — Title" within `menuBarBudget`. The title is preserved; the artist list is
-    /// trimmed (with an ellipsis) to whatever room is left. Falls back to a truncated
-    /// title alone when even that doesn't fit (no room for separator + one artist char).
-    static func menuBarText(title: String, artists: String) -> String {
-        let sep = " — "
-        let artists = artists.trimmingCharacters(in: .whitespaces)
-        let roomForArtists = menuBarBudget - title.count - sep.count
-        guard !artists.isEmpty, roomForArtists >= 1 else {
-            return truncated(title, to: menuBarBudget)
+    /// The now-playing text for the current mode, fitted to the configured point width using
+    /// the status button's own font (so what we measure is what macOS draws).
+    private func menuBarText(measuredWith button: NSStatusBarButton) -> String {
+        let settings = model.settings
+        switch settings.menuBarTitleMode {
+        case .never: return ""
+        case .whenHeld: guard case .held = model.reviewState else { return "" }
+        case .always: break
         }
-        return truncated(artists, to: roomForArtists) + sep + title
-    }
+        guard let np = model.displayTrack, !np.name.isEmpty else { return "" }
 
-    /// Ellipsis-truncate, always keeping at least one character of the original.
-    private static func truncated(_ s: String, to limit: Int) -> String {
-        s.count > limit ? String(s.prefix(max(1, limit - 1))) + "…" : s
+        let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
+        return MenuBarTitle.fitted(title: np.name,
+                                   artists: model.artistText(for: np),
+                                   maxWidth: CGFloat(settings.menuBarTitleMaxWidth)) {
+            ($0 as NSString).size(withAttributes: [.font: font]).width
+        }
     }
 
     // MARK: Settings
