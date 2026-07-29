@@ -1,6 +1,19 @@
 import Foundation
 import Combine
 
+/// Proof that a playlist removal was initiated by the user pressing a button.
+///
+/// `SpotifyProvider.removeTrack` requires one, and only the handlers in THIS file can
+/// construct one (`fileprivate init`). Discovery, timers, and any future automation are
+/// therefore unable to delete a song — not by convention, but because the code won't
+/// compile. This replaces a set of prose comments and advisory guards that a stale build
+/// happily ignored while it walked a playlist deleting 15 songs.
+struct UserRemovalIntent {
+    /// What the user pressed, for the log line at the point of deletion.
+    let gesture: String
+    fileprivate init(_ gesture: String) { self.gesture = gesture }
+}
+
 /// Central observable state + intents for the UI. Owns the provider, auth, settings,
 /// and a 1s poll of local playback.
 @MainActor
@@ -385,9 +398,10 @@ final class AppModel: ObservableObject {
     func removeCurrentFromSource() {
         guard let np = nowPlaying, source.isEditablePlaylist, source.playlistId != nil else { return }
         let sourceCtx = source
+        let intent = UserRemovalIntent("Remove button")
         discovery.noteManualReview(uri: np.uri, sourceId: sourceCtx.playlistId)
         Task {
-            let ok = await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx)
+            let ok = await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx, intent: intent)
             if ok, settings.skipToNextAfterRemove { next() }
         }
     }
@@ -395,7 +409,12 @@ final class AppModel: ObservableObject {
     // MARK: Discovery held actions
 
     func heldAdd() { resolveHeld { await self.performAdd(uri: $0, sourceCtx: $1) } }
-    func heldRemove() { resolveHeld { await self.performRemoveFromSource(uri: $0, sourceCtx: $1) } }
+
+    func heldRemove() {
+        let intent = UserRemovalIntent("held-panel Remove button")
+        resolveHeld { await self.performRemoveFromSource(uri: $0, sourceCtx: $1, intent: intent) }
+    }
+
     func heldSkip() { resolveHeld() }
 
     /// Resolve the held review: advance playback immediately (finishHold), then run the
@@ -433,7 +452,8 @@ final class AppModel: ObservableObject {
                DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
                                                   targetPlaylistId: settings.targetPlaylistId,
                                                   sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: true) {
-                try await provider.removeTrack(uri: uri, fromPlaylist: src)
+                try await provider.removeTrack(uri: uri, fromPlaylist: src,
+                                               intent: UserRemovalIntent("Add button (move)"))
                 setStatus("Moved to \(targetName)")
             }
             return true
@@ -444,8 +464,10 @@ final class AppModel: ObservableObject {
     }
 
     /// Returns true when the track was removed from the source playlist.
+    /// `intent` is the user gesture that authorized this — see `UserRemovalIntent`.
     @discardableResult
-    private func performRemoveFromSource(uri: String, sourceCtx: SourceContext) async -> Bool {
+    private func performRemoveFromSource(uri: String, sourceCtx: SourceContext,
+                                         intent: UserRemovalIntent) async -> Bool {
         guard sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId else { return false }
         // Only remove when the source context was resolved for THIS exact track. If the
         // source is stale (just changed track, or a missed-preempt hold), refuse rather
@@ -460,7 +482,7 @@ final class AppModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            try await provider.removeTrack(uri: uri, fromPlaylist: src)
+            try await provider.removeTrack(uri: uri, fromPlaylist: src, intent: intent)
             setStatus("Removed from \(name)")
             return true
         } catch {

@@ -55,6 +55,7 @@ targets:
       - path: Sources/SpotifyMenuBar/Models/Models.swift
       - path: Sources/SpotifyMenuBar/Discovery/DiscoveryLogic.swift
       - path: Sources/SpotifyMenuBar/Spotify/LocalSpotifyMapping.swift
+      - path: Sources/SpotifyMenuBar/UI/MenuBarTitle.swift
 
 schemes:
   SpotifyMenuBar:
