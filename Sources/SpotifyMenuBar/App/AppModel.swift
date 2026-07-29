@@ -168,11 +168,16 @@ final class AppModel: ObservableObject {
         // Only publish genuine changes: while parked (a hold) or idle the snapshot is
         // value-equal every tick, and re-publishing would re-render the panel and title 1x/s.
         if np != nowPlaying { nowPlaying = np }
+
+        // Whether this tick already spends a `/me/player` call on refreshSource. That call
+        // reports the active device too (it feeds applyDeviceResult), so pairing it with a
+        // separate refreshActiveDevice would burn two requests for one tick's worth of truth.
+        var willRefreshSource = false
         if np?.uri != lastURI {
             lastURI = np?.uri
             sourceResolveTries = 0
             if isAuthorized, np != nil {
-                Task { await refreshSource() }
+                willRefreshSource = true
             } else {
                 source = .none
             }
@@ -180,13 +185,15 @@ final class AppModel: ObservableObject {
             // Source didn't resolve for the current track (its first refresh raced a hold/slip/
             // reclaim transient). Retry so Remove / provenance can confirm the playlist.
             sourceResolveTries += 1
-            Task { await refreshSource() }
+            willRefreshSource = true
         }
+        if willRefreshSource { Task { await refreshSource() } }
+
         // The active device can change without the track changing (a mid-song Spotify Connect
         // hand-off). Refresh the device flag every tick while discovery is armed and something
         // is playing, so we stop pausing promptly when playback leaves this Mac. Single-flighted
         // inside refreshActiveDevice, so ticks can't pile up calls.
-        if isAuthorized, settings.discoveryEnabled, np != nil {
+        if isAuthorized, settings.discoveryEnabled, np != nil, !willRefreshSource {
             Task { await refreshActiveDevice() }
         }
         discovery.onTick(np: np, source: source)
@@ -249,7 +256,13 @@ final class AppModel: ObservableObject {
             displayArtists = result.artists
             displayArtistsURI = result.trackURI
             applyDeviceResult(result.deviceIsLocal, gen: gen)
-        } catch { source = .none }
+        } catch SpotifyWebAPI.APIError.rateLimited {
+            // Being throttled says nothing about what's playing. Keep the last known source
+            // rather than blanking it — `.none` greys out Remove and drops the "From" line,
+            // and during a backoff that would persist for the whole window.
+        } catch {
+            source = .none
+        }
         // A genuine source-playlist change starts a fresh discovery sweep — but never while a
         // review is held: finally resolving a held/slipped track's own source (a delayed first
         // read, not a real playlist change) must not tear down the hold. A real source change
@@ -483,6 +496,13 @@ final class AppModel: ObservableObject {
         defer { isBusy = false }
         do {
             try await provider.removeTrack(uri: uri, fromPlaylist: src, intent: intent)
+            // If that playlist *was* the target, the duplicate-detection cache must forget the
+            // track — otherwise it still reads as "already in target" and auto-skip keeps
+            // skipping a song that is no longer there.
+            if src == settings.targetPlaylistId {
+                targetMembership.remove(uri)
+                history.removeFromMembership(targetId: src, uri: uri)
+            }
             setStatus("Removed from \(name)")
             return true
         } catch {

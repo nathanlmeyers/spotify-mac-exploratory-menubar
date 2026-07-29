@@ -47,6 +47,15 @@ final class ReviewHistory {
         save()
     }
 
+    /// Drop a track we just removed from the target. Without this the cache keeps claiming the
+    /// song is "already in target" until the next full fetch, which is exactly the signal
+    /// auto-skip reads — so a removed song would go on being skipped as a duplicate.
+    func removeFromMembership(targetId: String, uri: String) {
+        guard store.targetMembership[targetId]?.contains(uri) == true else { return }
+        store.targetMembership[targetId]?.remove(uri)
+        save()
+    }
+
     // MARK: Persistence
     private func load() {
         // File absent → legitimate first run; start empty.
