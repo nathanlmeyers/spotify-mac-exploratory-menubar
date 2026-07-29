@@ -7,13 +7,25 @@ final class SpotifyWebAPI {
     private let auth: SpotifyAuth
     private let base = URL(string: "https://api.spotify.com/v1")!
 
+    /// While set and in the future, every request short-circuits without touching the network.
+    ///
+    /// Spotify answers a 429 with `Retry-After`, and the app polls `/me/player` about once a
+    /// second. With no backoff, a throttled session just kept hammering: one debug log held
+    /// **403,329** consecutive "Too many requests" responses, which is both self-inflicted load
+    /// and the reason source resolution kept failing (a failed resolve reads as "no playlist").
+    /// Honoring the header locally turns a storm into a pause.
+    private var rateLimitedUntil: Date?
+
     init(auth: SpotifyAuth) { self.auth = auth }
 
     enum APIError: LocalizedError {
         case http(Int, String)
+        case rateLimited(retryAfter: TimeInterval)
         var errorDescription: String? {
             switch self {
             case .http(let code, let msg): return "Spotify API error \(code): \(msg)"
+            case .rateLimited(let after):
+                return "Spotify is rate limiting us — retrying in \(Int(after.rounded()))s"
             }
         }
     }
@@ -161,6 +173,12 @@ final class SpotifyWebAPI {
     /// callers that need special-case statuses (204) inspect the response themselves.
     private func authorizedData(for url: URL, method: String = "GET",
                                 json: Any? = nil) async throws -> (Data, HTTPURLResponse?) {
+        // Refuse locally while a 429 backoff is live — no token fetch, no network.
+        if let until = rateLimitedUntil {
+            if Date() < until { throw APIError.rateLimited(retryAfter: until.timeIntervalSinceNow) }
+            rateLimitedUntil = nil
+        }
+
         let token = try await auth.validAccessToken()
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -170,7 +188,21 @@ final class SpotifyWebAPI {
             req.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
         let (data, resp) = try await URLSession.shared.data(for: req)
-        return (data, resp as? HTTPURLResponse)
+        let http = resp as? HTTPURLResponse
+        if http?.statusCode == 429 { beginBackoff(from: http) }
+        return (data, http)
+    }
+
+    /// Start honoring a 429. See `RateLimit.backoffInterval` for how the header is interpreted.
+    private func beginBackoff(from http: HTTPURLResponse?) {
+        let header = http?.value(forHTTPHeaderField: "Retry-After")
+        let wait = RateLimit.backoffInterval(retryAfterHeader: header)
+        // Only ever extend the window, so overlapping in-flight 429s can't shorten it.
+        let until = Date().addingTimeInterval(wait)
+        if until > (rateLimitedUntil ?? .distantPast) {
+            rateLimitedUntil = until
+            DebugLog.log("rate limited: pausing API calls for \(Int(wait))s (Retry-After: \(header ?? "absent"))")
+        }
     }
 
     private func getJSON<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
