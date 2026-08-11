@@ -27,6 +27,18 @@ static NSString *const kSpotifyBundleID = @"com.spotify.client";
 - (nullable SpotifyScriptingApplication *)app {
     if (_app == nil) {
         _app = (SpotifyScriptingApplication *)[SBApplication applicationWithBundleIdentifier:kSpotifyBundleID];
+        // Bound the Apple-event wait (ticks; 300 = 5s) instead of inheriting kAEDefaultTimeout.
+        // Defense in depth ONLY: this does not cover the failure that motivated it — when
+        // Spotify acknowledges an event and then never sends a reply, AESendMessage blocks
+        // indefinitely and no AE-level timeout fires. The real guarantee is the deadline in
+        // SpotifyBridgeClient, which keeps that block off the main thread entirely.
+        //
+        // Deliberately set LONGER than that deadline (5s vs 2s) so the client's deadline is the
+        // one that decides. If AE timed out first, a frozen Spotify would surface as an ordinary
+        // "nothing playing" (the accessors below catch the timeout and report Stopped) and the
+        // user would see an empty panel instead of an honest "isn't responding". This value's
+        // job is only to let an abandoned connection eventually drain its thread.
+        _app.timeout = 300;
     }
     return _app;
 }
@@ -112,6 +124,22 @@ static NSString *_Nullable SBFirstString(NSDictionary *props, NSArray<NSString *
     return nil;   // never stabilized — skip this tick; the next one (post-flip) succeeds.
 }
 
+- (nullable NSDictionary<NSString *, id> *)playbackSnapshot {
+    if (!self.isRunning) { return nil; }
+
+    SpotifyPlayerState state = self.playerState;
+    if (state == SpotifyPlayerStateStopped) { return nil; }
+
+    NSDictionary<NSString *, id> *track = [self currentTrackSnapshot];
+    if (track == nil) { return nil; }
+
+    NSMutableDictionary<NSString *, id> *snap = [track mutableCopy];
+    snap[@"playerState"] = @(state);
+    snap[@"position"]    = @(self.playerPosition);
+    snap[@"shuffling"]   = @(self.shuffling);
+    return snap;
+}
+
 - (double)playerPosition {
     if (!self.isRunning) { return 0; }
     @try {
@@ -162,14 +190,6 @@ static NSString *_Nullable SBFirstString(NSDictionary *props, NSArray<NSString *
 
 - (void)seekTo:(double)seconds {
     [self setPlayerPosition:seconds];
-}
-
-- (void)activateSpotify {
-    NSURL *url = [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:kSpotifyBundleID];
-    if (url != nil) {
-        NSWorkspaceOpenConfiguration *cfg = [NSWorkspaceOpenConfiguration configuration];
-        [[NSWorkspace sharedWorkspace] openApplicationAtURL:url configuration:cfg completionHandler:nil];
-    }
 }
 
 @end

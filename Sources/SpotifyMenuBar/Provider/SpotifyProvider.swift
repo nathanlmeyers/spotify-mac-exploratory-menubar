@@ -24,7 +24,17 @@ final class SpotifyProvider {
 
     // MARK: Local playback
     var isAppRunning: Bool { local.isAppRunning }
-    func nowPlaying() -> NowPlaying? { local.nowPlaying() }
+    /// Whether Spotify is answering Apple events. False means every local reading below is
+    /// stale — display it if you like, but never act on it.
+    var isResponsive: Bool { local.isResponsive }
+
+    /// Last known playback, served from cache — never blocks. Use for rendering.
+    func nowPlaying() -> NowPlaying? { local.lastKnown }
+    /// Take a new reading (the 1s poll). Returns nil if it couldn't be taken; see `isResponsive`.
+    func refreshNowPlaying() async -> NowPlaying? { await local.refresh() }
+    /// Force a fresh reading where a stale track identity would be harmful — see
+    /// `LocalSpotifyController.freshNowPlaying`.
+    func freshNowPlaying() async -> NowPlaying? { await local.freshNowPlaying() }
     func playPause() { local.playPause() }
     func pause() { local.pause() }
     func play() { local.play() }
@@ -97,8 +107,8 @@ final class SpotifyProvider {
         if let device, device.isActive, !Self.deviceIsThisMac(device) { return false } // active remote device
         if let device, Self.deviceIsThisMac(device) { return true }                    // active = this Mac
         // No active remote device. If the desktop app is playing, the audio is on this Mac.
-        // (Lightweight probe — one Apple event, not a full now-playing snapshot; this runs
-        // every device refresh, i.e. once per second while discovery is armed.)
+        // (Read from the poll's cached snapshot — this runs once per second while discovery is
+        // armed, and spending its own Apple event on it would double the app's event rate.)
         if local.isPlaying {
             DebugLog.log("device: no active Connect device; local app playing → treating as local")
             return true

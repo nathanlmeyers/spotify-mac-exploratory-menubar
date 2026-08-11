@@ -29,6 +29,7 @@ struct NowPlayingView: View {
 
     @ViewBuilder private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !model.isSpotifyResponsive { notRespondingNotice }
             // When a track is shown, the gear lives inline on the title row (see
             // `trackHeader`); the standalone top bar is only for the states without one.
             if let held = heldTrack {
@@ -46,6 +47,17 @@ struct NowPlayingView: View {
                 idleState
             }
         }
+    }
+
+    /// Spotify is running but has stopped answering Apple events, so everything below is the
+    /// last known reading rather than live. Say so, instead of showing a frozen track as if it
+    /// were current. No restart prompt: the connection rebuilds itself, and this clears on the
+    /// first successful read. Discovery is disarmed meanwhile (see GuardedTransport).
+    private var notRespondingNotice: some View {
+        Label("Spotify isn't responding — showing the last known track",
+              systemImage: "exclamationmark.triangle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     /// Settings gear, right-aligned on its own row — used in states with no track header.
