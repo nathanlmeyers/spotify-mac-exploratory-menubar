@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     @Published var isBusy = false
     @Published var reviewState: ReviewState = .inactive
     @Published var displayArtists: [String] = []   // full artist list from the Web API (incl. features)
+    /// False while Spotify is running but not answering Apple events. Published so the panel can
+    /// say so, rather than silently showing a frozen track as if it were live.
+    @Published private(set) var isSpotifyResponsive = true
 
     private var displayArtistsURI: String?
     private var discovery: DiscoveryEngine!
@@ -62,6 +65,9 @@ final class AppModel: ObservableObject {
     private var deviceGen = 0
     private var appliedDeviceGen = -1
     private var deviceRefreshInFlight = false
+    // Ticks are async now (the local read runs off-main under a deadline), so they must not
+    // overlap and interleave their writes to the state above.
+    private var tickInFlight = false
     // A track's source can fail to resolve on its first (URI-change) refresh when that read
     // races a hold/slip/reclaim transient — a just-paused track briefly drops its playlist
     // context from /me/player. Retry a bounded number of times while the source is unconfirmed
@@ -147,13 +153,19 @@ final class AppModel: ObservableObject {
     func start() {
         settings.bootstrap()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            Task { @MainActor in await self?.tick() }
         }
-        tick()
+        Task { await tick() }
         if isAuthorized { Task { await refreshAfterLogin() } }
     }
 
-    private func tick() {
+    private func tick() async {
+        // The local read is now asynchronous and can take up to its deadline, so ticks could
+        // otherwise overlap and interleave their state writes. One at a time.
+        guard !tickInFlight else { return }
+        tickInFlight = true
+        defer { tickInFlight = false }
+
         // A long gap since the previous tick means the timer didn't fire on schedule — almost
         // always sleep (lid closed), but also App Nap / a stall. The pre-gap device reading is
         // now untrustworthy: distrust it immediately so discovery can't act (skip/pause/grab
@@ -164,7 +176,18 @@ final class AppModel: ObservableObject {
         }
         lastTickAt = now
 
-        let np = provider.nowPlaying()
+        let np = await provider.refreshNowPlaying()
+
+        // Spotify stopped answering Apple events. Hold the last known track on screen (the UI
+        // labels it via `isSpotifyResponsive`) instead of blanking, and mark locality unknown
+        // so discovery issues no transport — never act on a reading we couldn't take.
+        if isSpotifyResponsive != provider.isResponsive { isSpotifyResponsive = provider.isResponsive }
+        guard isSpotifyResponsive else {
+            activeDeviceIsLocal = nil
+            await discovery.onTick(np: nil, source: source)
+            return
+        }
+
         // Only publish genuine changes: while parked (a hold) or idle the snapshot is
         // value-equal every tick, and re-publishing would re-render the panel and title 1x/s.
         if np != nowPlaying { nowPlaying = np }
@@ -196,7 +219,7 @@ final class AppModel: ObservableObject {
         if isAuthorized, settings.discoveryEnabled, np != nil, !willRefreshSource {
             Task { await refreshActiveDevice() }
         }
-        discovery.onTick(np: np, source: source)
+        await discovery.onTick(np: np, source: source)
     }
 
     /// Cheap, throttled refresh of just the active-device flag (one `/me/player` call).
@@ -436,8 +459,12 @@ final class AppModel: ObservableObject {
         guard case .held(let held) = reviewState else { return }
         let uri = held.snapshot.uri
         let sourceCtx = heldSourceContext(held) ?? .none
-        discovery.finishHold(judgedURI: uri, sourceId: sourceCtx.playlistId)
-        if let action { Task { _ = await action(uri, sourceCtx) } }
+        // `uri` and `sourceCtx` are frozen above, so the curation action is unaffected by
+        // anything finishHold's fresh read observes — it just runs after playback has advanced.
+        Task {
+            await discovery.finishHold(judgedURI: uri, sourceId: sourceCtx.playlistId)
+            if let action { _ = await action(uri, sourceCtx) }
+        }
     }
 
     // MARK: Curation core (URI-explicit; shared by buttons + held actions)
@@ -517,7 +544,7 @@ final class AppModel: ObservableObject {
     private func refreshSoon() {
         Task {
             try? await Task.sleep(nanoseconds: 250_000_000)
-            tick()
+            await tick()
         }
     }
 

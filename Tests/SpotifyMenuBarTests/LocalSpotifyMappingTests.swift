@@ -87,4 +87,58 @@ final class LocalSpotifyMappingTests: XCTestCase {
         XCTAssertEqual(NowPlayingMapping.normalizeDuration(nil), 0)
         XCTAssertEqual(NowPlayingMapping.normalizeDuration("not a number"), 0)
     }
+
+    // MARK: - Combined playback snapshot (SpotifyBridge.playbackSnapshot)
+    //
+    // The whole poll now arrives as one dictionary — track identity plus the app-level player
+    // facts — so the app makes a single bounded Apple-event call per tick instead of four.
+
+    /// A snapshot as `playbackSnapshot` builds it: track keys plus playerState/position/shuffling.
+    private func playbackSnapshot(state: Int, position: Double, shuffling: Bool) -> [String: Any] {
+        [
+            SpotifyTrackKey.id: "spotify:track:abc",
+            SpotifyTrackKey.name: "Song",
+            SpotifyTrackKey.artist: "Artist",
+            SpotifyTrackKey.durationRaw: NSNumber(value: 210000),
+            SpotifyPlaybackKey.playerState: NSNumber(value: state),
+            SpotifyPlaybackKey.position: NSNumber(value: position),
+            SpotifyPlaybackKey.shuffling: NSNumber(value: shuffling),
+        ]
+    }
+
+    func testPlaybackSnapshotCarriesPlayerFacts() {
+        // 1 == SpotifyPlayerStatePlaying.
+        let np = NowPlayingMapping.makeNowPlaying(
+            fromPlaybackSnapshot: playbackSnapshot(state: 1, position: 42.5, shuffling: true))
+        XCTAssertEqual(np?.uri, "spotify:track:abc")
+        XCTAssertEqual(np?.name, "Song")
+        XCTAssertEqual(np?.positionSeconds, 42.5)
+        XCTAssertEqual(np?.durationSeconds, 210)   // normalized from milliseconds
+        XCTAssertEqual(np?.isPlaying, true)
+        XCTAssertEqual(np?.isShuffling, true)
+    }
+
+    func testPlaybackSnapshotPausedIsNotPlaying() {
+        // 2 == SpotifyPlayerStatePaused. Only "playing" counts as playing — a paused hold must
+        // not read as live playback, or discovery would treat a parked song as still running.
+        let np = NowPlayingMapping.makeNowPlaying(
+            fromPlaybackSnapshot: playbackSnapshot(state: 2, position: 10, shuffling: false))
+        XCTAssertEqual(np?.isPlaying, false)
+        XCTAssertEqual(np?.isShuffling, false)
+    }
+
+    func testPlaybackSnapshotWithoutPlayerFactsDefaultsSafely() {
+        // Missing app-level keys must not fabricate playback: absent ⇒ not playing, position 0.
+        let np = NowPlayingMapping.makeNowPlaying(
+            fromPlaybackSnapshot: [SpotifyTrackKey.id: "spotify:track:abc"])
+        XCTAssertEqual(np?.uri, "spotify:track:abc")
+        XCTAssertEqual(np?.isPlaying, false)
+        XCTAssertEqual(np?.positionSeconds, 0)
+    }
+
+    func testPlaybackSnapshotWithoutTrackIdentityIsNil() {
+        let np = NowPlayingMapping.makeNowPlaying(
+            fromPlaybackSnapshot: [SpotifyPlaybackKey.playerState: NSNumber(value: 1)])
+        XCTAssertNil(np)
+    }
 }

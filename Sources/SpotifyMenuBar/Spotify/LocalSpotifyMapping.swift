@@ -13,6 +13,14 @@ enum SpotifyTrackKey {
     static let durationRaw = "durationRaw" // raw track duration (NSNumber), normalized here
 }
 
+/// The app-level (not track-level) keys that `SpotifyBridge.playbackSnapshot` adds on top of
+/// `SpotifyTrackKey`. Same contract: these literals are shared with the Objective-C bridge.
+enum SpotifyPlaybackKey {
+    static let playerState = "playerState" // NSNumber, SpotifyPlayerState raw value
+    static let position = "position"       // NSNumber, seconds
+    static let shuffling = "shuffling"     // NSNumber, BOOL
+}
+
 /// Pure mapping from a now-playing snapshot dictionary to `NowPlaying`. No Spotify /
 /// ScriptingBridge dependency — unit-testable in isolation.
 enum NowPlayingMapping {
@@ -37,6 +45,22 @@ enum NowPlayingMapping {
             positionSeconds: positionSeconds,
             isPlaying: isPlaying,
             isShuffling: isShuffling
+        )
+    }
+
+    /// `SpotifyPlayerStatePlaying`'s raw value. Duplicated as a plain Int rather than importing
+    /// the Objective-C enum so this file stays free of the ScriptingBridge shim and testable.
+    private static let playerStatePlaying = 1
+
+    /// Builds a `NowPlaying` from the combined `SpotifyBridge.playbackSnapshot` dictionary,
+    /// which carries the app-level player facts alongside the atomic track fields.
+    static func makeNowPlaying(fromPlaybackSnapshot snapshot: [String: Any]) -> NowPlaying? {
+        let state = (snapshot[SpotifyPlaybackKey.playerState] as? NSNumber)?.intValue
+        return makeNowPlaying(
+            from: snapshot,
+            positionSeconds: (snapshot[SpotifyPlaybackKey.position] as? NSNumber)?.doubleValue ?? 0,
+            isPlaying: state == playerStatePlaying,
+            isShuffling: (snapshot[SpotifyPlaybackKey.shuffling] as? NSNumber)?.boolValue ?? false
         )
     }
 

@@ -35,6 +35,12 @@ private struct GuardedTransport {
             DebugLog.log("discovery: dropped \(name) — playback not confirmed on this Mac")
             return
         }
+        // Spotify isn't answering Apple events, so every reading behind this decision is stale.
+        // Same contract as above: degrade to a logged no-op rather than act on a guess.
+        guard provider.isResponsive else {
+            DebugLog.log("discovery: dropped \(name) — Spotify isn't responding")
+            return
+        }
         action()
     }
 }
@@ -120,7 +126,7 @@ final class DiscoveryEngine {
 
     // MARK: - Poll entry point (called from AppModel.tick())
 
-    func onTick(np: NowPlaying?, source: SourceContext) {
+    func onTick(np: NowPlaying?, source: SourceContext) async {
         defer { lastNP = np }
 
         guard settings.discoveryEnabled else { goIdle(); return }
@@ -145,7 +151,7 @@ final class DiscoveryEngine {
         let uri = np.uri
         switch phase {
         case .reclaiming(let expectedA, let attempts):
-            resolveReclaim(np, source, expectedA: expectedA, attempts: attempts)
+            await resolveReclaim(np, source, expectedA: expectedA, attempts: attempts)
 
         case .holding(let heldURI):
             if uri != heldURI {
@@ -197,7 +203,7 @@ final class DiscoveryEngine {
                     evaluateNewCandidate(np, source)
                 }
             } else {
-                updateWatching(np)
+                await updateWatching(np)
             }
         }
     }
@@ -248,7 +254,7 @@ final class DiscoveryEngine {
         setPhase(.reclaiming(expectedA: expectedA, attempts: attempts), publish: lastPublished)
     }
 
-    private func resolveReclaim(_ np: NowPlaying, _ source: SourceContext, expectedA: String, attempts: Int) {
+    private func resolveReclaim(_ np: NowPlaying, _ source: SourceContext, expectedA: String, attempts: Int) async {
         if np.uri == expectedA {
             // Landed back on the track to review. Pause it and hold (or auto-skip if it qualifies).
             transport.pause()
@@ -261,7 +267,7 @@ final class DiscoveryEngine {
                 if np.durationSeconds > minHoldableDuration {
                     transport.seek(to: max(0, np.durationSeconds - lead))
                 }
-                enterHolding(expectedURI: expectedA, fallback: np)
+                await enterHolding(expectedURI: expectedA, fallback: np)
             }
             return
         }
@@ -349,7 +355,7 @@ final class DiscoveryEngine {
 
     // MARK: - Precise pause scheduling
 
-    private func updateWatching(_ np: NowPlaying) {
+    private func updateWatching(_ np: NowPlaying) async {
         if heldOrJudgedURIs.contains(np.uri) { invalidateTimer(); return }
         if !np.isPlaying {
             // Manual pause mid-song → cancel the scheduled hold; re-arm when playback resumes.
@@ -368,7 +374,7 @@ final class DiscoveryEngine {
            (np.durationSeconds - np.positionSeconds) <= lead {
             invalidateTimer()
             transport.pause()
-            enterHolding(expectedURI: np.uri, fallback: np)
+            await enterHolding(expectedURI: np.uri, fallback: np)
             return
         }
         armPrecisePause(np)   // re-arm against fresh polled position (handles seek + drift)
@@ -380,21 +386,26 @@ final class DiscoveryEngine {
         let remaining = max(0, np.durationSeconds - np.positionSeconds)
         let fireIn = max(0, remaining - lead)
         precisePauseTimer = Timer.scheduledTimer(withTimeInterval: fireIn, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.firePreciseHold() }
+            Task { @MainActor in await self?.firePreciseHold() }
         }
         precisePauseTimer?.tolerance = 0.05
     }
 
-    private func firePreciseHold() {
+    private func firePreciseHold() async {
         guard case .watching = phase, let uri = activeURI, !heldOrJudgedURIs.contains(uri) else { return }
         // The timer is armed up to a whole song earlier and fires independently of the poll
         // loop: re-check here so a hand-off to the phone since arming can't pause the phone.
         guard activeDeviceIsLocal() == true else { goIdle(); return }
-        guard let live = provider.nowPlaying() else { return }
+        // A *fresh* read, not the poll's cache: this decides which song gets parked, and the
+        // cached snapshot can be a full second old — long enough to name the wrong track.
+        guard let live = await provider.freshNowPlaying() else { return }
+        // Re-check the phase after the await: a poll that landed while we were reading may have
+        // already moved us on (held, reclaiming, judged).
+        guard case .watching = phase, activeURI == uri, !heldOrJudgedURIs.contains(uri) else { return }
         if live.uri == uri {
             DebugLog.log("discovery: precise hold (timer) on \"\(live.name)\" pos=\(Int(live.positionSeconds))/\(Int(live.durationSeconds))s")
             transport.pause()
-            enterHolding(expectedURI: uri, fallback: live)
+            await enterHolding(expectedURI: uri, fallback: live)
         } else {
             // Missed the pre-emptive pause (latency/crossfade) and the track already advanced.
             // Reclaim the track we were watching rather than holding/skipping its successor.
@@ -407,9 +418,9 @@ final class DiscoveryEngine {
     /// it must never be the *successor* — which is what a now-playing read returns when our pause
     /// landed a hair too late and Spotify already advanced. In that case we paused the wrong track,
     /// so we recover the intended one (reclaim) instead of ever displaying/judging the wrong song.
-    private func enterHolding(expectedURI: String, fallback: NowPlaying) {
+    private func enterHolding(expectedURI: String, fallback: NowPlaying) async {
         // Fresh read failed → conservative pre-pause snapshot (identity already verified).
-        guard let fresh = provider.nowPlaying() else { commitHold(fallback); return }
+        guard let fresh = await provider.freshNowPlaying() else { commitHold(fallback); return }
         guard fresh.uri == expectedURI else {
             // We paused the successor, not the track we were reviewing. Step back to recover it.
             DebugLog.log("discovery: hold aborted — expected [\(expectedURI)] but now on \"\(fresh.name)\" [\(fresh.uri)]; reclaiming")
@@ -443,7 +454,7 @@ final class DiscoveryEngine {
 
     /// Mark the held track reviewed, advance, and resume the cycle. AppModel performs
     /// any add/remove with the explicit URI before/after calling this.
-    func finishHold(judgedURI: String, sourceId: String?) {
+    func finishHold(judgedURI: String, sourceId: String?) async {
         invalidateTimer()
         recordJudgment(uri: judgedURI, sourceId: sourceId)
         resetLoopProtection()
@@ -456,7 +467,7 @@ final class DiscoveryEngine {
         // while paused) — that's still local, so an aged-out flag must not strand playback.
         // Use provider.* directly: GuardedTransport gates on a confirmed-true flag and would
         // wrongly drop these on `nil`; the explicit `confirmedRemote` check is the guard here.
-        let live = provider.nowPlaying()
+        let live = await provider.freshNowPlaying()
         let confirmedRemote = activeDeviceIsLocal() == false
         if !confirmedRemote, live == nil || live?.uri == judgedURI {
             setPhase(.acting, publish: .watching)
