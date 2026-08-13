@@ -161,6 +161,76 @@ final class SpotifyWebAPI {
                        json: ["items": [["uri": uri]], "snapshot_id": snapshotId])
     }
 
+    // MARK: - Saved episodes ("Your Episodes")
+
+    /// One entry of the saved-episodes library. `showName` is nil when Spotify omits the show.
+    struct SavedEpisode: Equatable {
+        let id: String
+        let name: String
+        let showName: String?
+        /// `DELETE /me/library` identifies items by URI, not by bare id.
+        var uri: String { LibraryLogic.episodeURI(id: id) }
+    }
+
+    /// Everything in "Your Episodes", oldest-saved first.
+    ///
+    /// This is the user's saved-episode *library* (`/me/episodes`), not a playlist — Spotify
+    /// renders it like one but it has no playlist id, and no client offers a bulk unsave.
+    /// Requires the `user-library-read` scope.
+    func savedEpisodes() async throws -> [SavedEpisode] {
+        struct Page: Decodable {
+            struct Item: Decodable {
+                let episode: Episode?
+                struct Episode: Decodable {
+                    let id: String?
+                    let name: String?
+                    let show: Show?
+                    struct Show: Decodable { let name: String? }
+                }
+            }
+            let items: [Item]
+            let next: String?
+        }
+        var results: [SavedEpisode] = []
+        try await paginate(from: urlForPath("/me/episodes", query: [.init(name: "limit", value: "50")]),
+                           next: \Page.next) { page in
+            for entry in page.items {
+                // `episode` comes back null for items unavailable in the user's market. They still
+                // occupy a library slot but expose no id, so they can't be unsaved — skip them
+                // rather than crash, and let the count reflect only what we can actually remove.
+                guard let ep = entry.episode, let id = ep.id else { continue }
+                results.append(SavedEpisode(id: id, name: ep.name ?? "(untitled episode)",
+                                            showName: ep.show?.name))
+            }
+        }
+        return results
+    }
+
+    /// Removes up to 40 items from the user's library by URI. Requires `user-library-modify`.
+    ///
+    /// Uses the unified `DELETE /me/library`. The per-type endpoint this replaced
+    /// (`DELETE /me/episodes`, ids in a JSON body) was **removed** in the February 2026 API
+    /// changes and now answers a bare `403 Forbidden` — not a 404 or a deprecation warning, so
+    /// the failure reads like a permissions problem even when the scopes are right.
+    ///
+    /// The URIs go in the query string, which is the documented form; this endpoint takes no
+    /// body, so it can't use `send(_:method:json:)`.
+    ///
+    /// Like `removeTrack`, this takes a `UserRemovalIntent` so it is unreachable from anything
+    /// but a button handler in `AppModel` — a bulk unsave is the most destructive call in the
+    /// app, and the compiler is the only guard that survives a stale build.
+    func removeLibraryItems(uris: [String], intent: UserRemovalIntent) async throws {
+        guard !uris.isEmpty else { return }
+        precondition(uris.count <= LibraryLogic.maxLibraryURIsPerRequest,
+                     "Spotify accepts at most \(LibraryLogic.maxLibraryURIsPerRequest) URIs per request")
+        var comps = URLComponents(url: base.appendingPathComponent("/me/library"),
+                                  resolvingAgainstBaseURL: false)!
+        // Set the already-encoded query directly: URLQueryItem would re-encode the `%` escapes.
+        comps.percentEncodedQuery = LibraryLogic.urisQuery(uris)
+        let (data, http) = try await authorizedData(for: comps.url!, method: "DELETE")
+        try throwIfError("DELETE /me/library", http, data)
+    }
+
     // MARK: - Request plumbing
 
     private func urlForPath(_ path: String, query: [URLQueryItem] = []) -> URL {

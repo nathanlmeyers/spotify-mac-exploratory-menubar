@@ -150,4 +150,23 @@ final class SpotifyProvider {
             throw error
         }
     }
+
+    /// Everything currently in "Your Episodes" (the saved-episode library, not a playlist).
+    func savedEpisodes() async throws -> [SpotifyWebAPI.SavedEpisode] {
+        try await api.savedEpisodes()
+    }
+
+    /// Removes one batch of library items. Same contract as `removeTrack`: a `UserRemovalIntent`
+    /// only AppModel's button handlers can construct, and a log line per batch listing every URI —
+    /// with no recovery file, that log is the sole record of what a bulk clear removed.
+    func removeLibraryItems(uris: [String], intent: UserRemovalIntent) async throws {
+        DebugLog.log("REMOVE [\(intent.gesture)] \(uris.count) library items: \(uris.joined(separator: ","))")
+        do {
+            try await api.removeLibraryItems(uris: uris, intent: intent)
+            DebugLog.log("REMOVE ok \(uris.count) library items")
+        } catch {
+            DebugLog.log("REMOVE FAILED \(uris.count) library items: \(error.localizedDescription)")
+            throw error
+        }
+    }
 }

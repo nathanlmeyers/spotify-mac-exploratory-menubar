@@ -9,6 +9,7 @@ struct SettingsView: View {
         Form {
             account
             curationSection
+            librarySection
             menuBarSection
             discoverySection
             systemSection
@@ -88,6 +89,75 @@ struct SettingsView: View {
     private var targetCaption: String {
         if let name = settings.targetPlaylistName { return "Adding to: \(name)" }
         return "Pick an editable playlist you own."
+    }
+
+    // MARK: Library
+
+    /// "Your Episodes" is Spotify's saved-podcast-episodes library — it looks like a playlist in
+    /// the client but isn't one, and no Spotify client offers a way to empty it.
+    @ViewBuilder private var librarySection: some View {
+        Section("Library") {
+            switch model.clearEpisodes {
+            case .idle:
+                if !model.isAuthorized {
+                    caption("Log in to manage Your Episodes.")
+                } else if !model.hasLibraryScopes {
+                    caption("Clearing Your Episodes needs podcast-library permission. Log out and log back in to grant it.")
+                    HStack {
+                        Spacer()
+                        Button("Log out") { model.logout() }.controlSize(.small)
+                    }
+                } else {
+                    HStack {
+                        caption("Spotify gives you no way to empty Your Episodes.")
+                        Spacer()
+                        Button("Clear Your Episodes…") { model.beginClearYourEpisodes() }
+                            .controlSize(.small)
+                    }
+                }
+
+            case .counting:
+                HStack {
+                    ProgressView().controlSize(.small)
+                    caption("Counting saved episodes…")
+                }
+
+            case .confirming(let count):
+                Text("Permanently unsave all \(count) episode\(count == 1 ? "" : "s")? This can't be undone.")
+                    .font(.callout)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelClearYourEpisodes() }.controlSize(.small)
+                    Button("Remove \(count) episode\(count == 1 ? "" : "s")", role: .destructive) {
+                        model.confirmClearYourEpisodes()
+                    }
+                    .controlSize(.small)
+                }
+
+            case .clearing(let done, let total):
+                ProgressView(value: Double(done), total: Double(max(total, 1)))
+                caption(LibraryLogic.progressLabel(done: done, total: total))
+
+            case .finished(let removed):
+                HStack {
+                    caption(removed == 0 ? "Your Episodes is already empty."
+                                         : "Removed \(removed) episode\(removed == 1 ? "" : "s").")
+                    Spacer()
+                    Button("Done") { model.acknowledgeClearYourEpisodes() }.controlSize(.small)
+                }
+
+            case .failed(let message):
+                HStack {
+                    Text(message).font(.caption).foregroundStyle(.red)
+                    Spacer()
+                    Button("Done") { model.acknowledgeClearYourEpisodes() }.controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
     }
 
     // MARK: Menu bar
