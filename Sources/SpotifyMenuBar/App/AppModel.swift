@@ -14,6 +14,20 @@ struct UserRemovalIntent {
     fileprivate init(_ gesture: String) { self.gesture = gesture }
 }
 
+/// Where the "Clear Your Episodes" flow is, so Settings can render it without owning any logic.
+///
+/// `.confirming` exists to make the count part of the decision: Spotify's saved-episode library
+/// has no bulk unsave and no undo, so the user sees the real number before the one destructive
+/// press, not after.
+enum ClearEpisodesState: Equatable {
+    case idle
+    case counting
+    case confirming(count: Int)
+    case clearing(done: Int, total: Int)
+    case finished(removed: Int)
+    case failed(String)
+}
+
 /// Central observable state + intents for the UI. Owns the provider, auth, settings,
 /// and a 1s poll of local playback.
 @MainActor
@@ -32,6 +46,7 @@ final class AppModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var isBusy = false
     @Published var reviewState: ReviewState = .inactive
+    @Published private(set) var clearEpisodes: ClearEpisodesState = .idle
     @Published var displayArtists: [String] = []   // full artist list from the Web API (incl. features)
     /// False while Spotify is running but not answering Apple events. Published so the panel can
     /// say so, rather than silently showing a frozen track as if it were live.
@@ -146,6 +161,9 @@ final class AppModel: ObservableObject {
 
     var isAuthorized: Bool { auth.isAuthorized }
     var hasClientID: Bool { auth.hasClientID }
+    /// False on a token minted before the library scopes were requested — a refresh can't widen
+    /// scopes, so clearing Your Episodes needs a fresh login first.
+    var hasLibraryScopes: Bool { auth.hasLibraryScopes }
     var isSpotifyRunning: Bool { provider.isAppRunning }
 
     // MARK: Lifecycle
@@ -408,6 +426,7 @@ final class AppModel: ObservableObject {
         targetMembership = []
         lastSourceId = nil
         discovery.reset()
+        clearEpisodes = .idle    // never leave another account's episode count on screen
     }
 
     // MARK: Curation
@@ -535,6 +554,77 @@ final class AppModel: ObservableObject {
         } catch {
             setStatus("Remove failed: \(error.localizedDescription)", isError: true)
             return false
+        }
+    }
+
+    // MARK: Library — clear "Your Episodes"
+
+    /// Step 1 of 2: count what's there. Counting is a separate step precisely so the confirm
+    /// prompt can name a real number instead of asking the user to approve an unknown quantity.
+    func beginClearYourEpisodes() {
+        guard isAuthorized, hasLibraryScopes else { return }
+        guard clearEpisodes == .idle else { return }
+        clearEpisodes = .counting
+        Task {
+            do {
+                let episodes = try await provider.savedEpisodes()
+                // Nothing to do — skip the confirm rather than asking to delete zero things.
+                clearEpisodes = episodes.isEmpty ? .finished(removed: 0)
+                                                 : .confirming(count: episodes.count)
+            } catch {
+                clearEpisodes = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func cancelClearYourEpisodes() { clearEpisodes = .idle }
+
+    /// Dismiss a terminal result and return the row to its resting state.
+    func acknowledgeClearYourEpisodes() {
+        switch clearEpisodes {
+        case .finished, .failed: clearEpisodes = .idle
+        default: break
+        }
+    }
+
+    /// Step 2 of 2: the destructive press, and the only place a bulk-unsave intent is created.
+    ///
+    /// Re-reads the library first: the confirmed count came from a fetch that may be minutes old,
+    /// and acting on that stale list could unsave an episode saved since. Stops at the first
+    /// failure (including a 429 backoff) and reports how far it got — silently retrying a bulk
+    /// delete against a rate limit is how you turn one problem into two.
+    func confirmClearYourEpisodes() {
+        guard case .confirming = clearEpisodes else { return }
+        guard isAuthorized, hasLibraryScopes else { return }
+        let intent = UserRemovalIntent("Clear Your Episodes button (confirmed)")
+        clearEpisodes = .clearing(done: 0, total: 0)
+        Task {
+            var removed = 0
+            var total = 0
+            do {
+                let uris = try await provider.savedEpisodes().map(\.uri)
+                total = uris.count
+                guard total > 0 else {
+                    clearEpisodes = .finished(removed: 0)
+                    return
+                }
+                clearEpisodes = .clearing(done: 0, total: total)
+                DebugLog.log("clear Your Episodes: starting, \(total) saved episodes")
+                for batch in LibraryLogic.batches(uris) {
+                    try await provider.removeLibraryItems(uris: batch, intent: intent)
+                    removed += batch.count
+                    clearEpisodes = .clearing(done: removed, total: total)
+                }
+                DebugLog.log("clear Your Episodes: removed \(removed) of \(total)")
+                clearEpisodes = .finished(removed: removed)
+                setStatus("Cleared \(removed) episode\(removed == 1 ? "" : "s")")
+            } catch {
+                let message = LibraryLogic.partialFailureLabel(done: removed, total: total,
+                                                               error: error.localizedDescription)
+                DebugLog.log("clear Your Episodes FAILED: \(message)")
+                clearEpisodes = .failed(message)
+                setStatus(message, isError: true)
+            }
         }
     }
 

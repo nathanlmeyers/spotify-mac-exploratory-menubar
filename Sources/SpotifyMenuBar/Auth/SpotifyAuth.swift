@@ -5,8 +5,36 @@ struct TokenBundle: Codable {
     var accessToken: String
     var refreshToken: String
     var expiresAt: Date
+    /// The scopes Spotify actually granted, space-separated, as reported by the token endpoint.
+    ///
+    /// Refreshing a token never *widens* its scopes, so when we add a scope to `SpotifyAuth.scopes`
+    /// everyone already logged in keeps a token that can't reach the new endpoints. Recording what
+    /// was granted lets the UI say "log out and back in" instead of surfacing a bare 403.
+    ///
+    /// Optional in `init(from:)` so token bundles written before this field existed still decode —
+    /// a decode failure here would silently log the user out.
+    var grantedScopes: String = ""
     /// Treat as expired 60s early to avoid edge-of-expiry failures.
     var isExpired: Bool { Date() >= expiresAt.addingTimeInterval(-60) }
+
+    func grants(_ scope: String) -> Bool {
+        grantedScopes.split(separator: " ").contains { $0 == scope }
+    }
+
+    init(accessToken: String, refreshToken: String, expiresAt: Date, grantedScopes: String = "") {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+        self.grantedScopes = grantedScopes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try c.decode(String.self, forKey: .accessToken)
+        refreshToken = try c.decode(String.self, forKey: .refreshToken)
+        expiresAt = try c.decode(Date.self, forKey: .expiresAt)
+        grantedScopes = try c.decodeIfPresent(String.self, forKey: .grantedScopes) ?? ""
+    }
 }
 
 /// Owns the OAuth 2.0 Authorization Code + PKCE flow and token lifecycle.
@@ -14,21 +42,28 @@ struct TokenBundle: Codable {
 @MainActor
 final class SpotifyAuth: ObservableObject {
     static let redirectURI = "spotifymenubar://callback"
-    static let scopes = [
+    /// Reading and emptying "Your Episodes" (the saved-podcast-episodes library, not a playlist)
+    /// needs the library scopes: `GET /me/episodes` requires read, `DELETE /me/library` modify.
+    static let libraryScopes = ["user-library-read", "user-library-modify"]
+
+    static let scopes = ([
         "playlist-read-private",
         "playlist-read-collaborative",
         "playlist-modify-public",
         "playlist-modify-private",
         "user-read-playback-state",
         "user-read-currently-playing",
-    ].joined(separator: " ")
+    ] + libraryScopes).joined(separator: " ")
 
     @Published private(set) var isAuthorized = false
     @Published private(set) var lastError: String?
+    /// False when we're running on a token minted before the library scopes were added. The
+    /// only fix is a fresh login — see `TokenBundle.grantedScopes`.
+    @Published private(set) var hasLibraryScopes = false
 
     private let clientID: String
     private let keychainAccount = "spotify-oauth"
-    private var tokens: TokenBundle? { didSet { isAuthorized = (tokens != nil) } }
+    private var tokens: TokenBundle? { didSet { publishTokenState() } }
     private var pendingVerifier: String?
     private var pendingState: String?
 
@@ -49,8 +84,13 @@ final class SpotifyAuth: ObservableObject {
         if let data = KeychainStore.load(account: keychainAccount),
            let stored = try? JSONDecoder().decode(TokenBundle.self, from: data) {
             tokens = stored
-            isAuthorized = true
+            publishTokenState()   // didSet doesn't fire for assignments made inside init
         }
+    }
+
+    private func publishTokenState() {
+        isAuthorized = (tokens != nil)
+        hasLibraryScopes = Self.libraryScopes.allSatisfy { tokens?.grants($0) ?? false }
     }
 
     /// False if the developer hasn't filled in their Client ID yet.
@@ -140,6 +180,9 @@ final class SpotifyAuth: ObservableObject {
         ])
         // Spotify often omits a new refresh token — keep the existing one.
         if refreshed.refreshToken.isEmpty { refreshed.refreshToken = existing.refreshToken }
+        // Likewise for `scope`: when the refresh response omits it, the grant is unchanged, so
+        // carry the old value rather than reading the token as having lost every scope.
+        if refreshed.grantedScopes.isEmpty { refreshed.grantedScopes = existing.grantedScopes }
         return refreshed
     }
 
@@ -166,7 +209,8 @@ final class SpotifyAuth: ObservableObject {
         return TokenBundle(
             accessToken: r.access_token,
             refreshToken: r.refresh_token ?? "",
-            expiresAt: Date().addingTimeInterval(r.expires_in)
+            expiresAt: Date().addingTimeInterval(r.expires_in),
+            grantedScopes: r.scope ?? ""
         )
     }
 

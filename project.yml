@@ -57,6 +57,7 @@ targets:
       - path: Sources/SpotifyMenuBar/Spotify/LocalSpotifyMapping.swift
       - path: Sources/SpotifyMenuBar/UI/MenuBarTitle.swift
       - path: Sources/SpotifyMenuBar/API/RateLimit.swift
+      - path: Sources/SpotifyMenuBar/Support/LibraryLogic.swift
 
 schemes:
   SpotifyMenuBar:

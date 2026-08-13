@@ -78,4 +78,12 @@ On first run:
   non-activating panel / icon pulse / sound), and auto-skip rules (already-in-target,
   already-reviewed) with loop protection. Toggle it on in Settings. *Pending live
   verification against the Web API (needs your Client ID).*
+- **Clear Your Episodes** (Settings ▸ Library): empties Spotify's saved-podcast-episodes
+  library, which the Spotify clients offer no way to bulk-clear. Two-step confirm showing
+  the real count; **irreversible** — the only record of what was removed is the episode URIs
+  in the debug log.
 - **Phase 3:** notarized GitHub distribution; see `ROADMAP.md`.
+
+> **Upgrading?** Clearing Your Episodes needs the `user-library-read` / `user-library-modify`
+> scopes, which older tokens don't carry — a token refresh can't widen scopes. Settings will
+> tell you to **log out and log back in** once; everything else keeps working meanwhile.
