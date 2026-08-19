@@ -11,6 +11,7 @@ background instead of only when you have a window open.
 | **Curate as you listen** | Click the icon for the current song with **Add** (to a target playlist) and **Remove** (from the playlist you're listening to), plus transport and a seek scrubber. |
 | **Discovery mode** | Holds playback just before each song ends so you can triage a new-releases playlist into keepers without it auto-advancing. |
 | **New From Followed** | Checks your followed artists once a day and collects anything they released — or were featured on — into a playlist. A free, local replacement for a paid release-radar service. |
+| **Artists to Follow** | Lists the artists you demonstrably listen to but never followed, ranked from your own top artists and top tracks, with Play / Follow / Not interested on each row. |
 | **Clear Your Episodes** | Empties Spotify's saved-podcast-episodes library, which no Spotify client offers a way to bulk-clear. |
 
 Design notes:
@@ -136,6 +137,45 @@ There's a read-only probe for the API assumptions behind all of this:
 ./scripts/probe-new-releases.py
 ```
 
+## Artists to Follow
+
+Right-click the menu-bar icon → **Artists to Follow…** (or the person-plus button in the
+panel, or **Settings ▸ Artists to follow ▸ Open…**). It lists artists you listen to but
+haven't followed, best first, with the evidence for each — *"#3 in your top artists (all
+time) · 5 songs in your top tracks"*.
+
+Each row has **Play**, a link to their Spotify page, **Follow**, and **Not interested**.
+
+Three things worth knowing:
+
+- **The suggestions come from your own history, not from Spotify's recommender.** February
+  2026 removed `/recommendations` and `/artists/{id}/related-artists`, so "artists similar to
+  ones you like" is no longer buildable by anyone outside Spotify. What's left is better for
+  this purpose anyway: every suggestion is an artist you already played, so you can check it.
+  Ranking blends your top artists and the artists credited on your top tracks across all three
+  time ranges, weighting a lead credit above a guest verse and enduring taste above a recent
+  binge. There's no popularity anywhere in it — that field was removed too.
+- **Play hands the choice to Spotify.** `GET /artists/{id}/top-tracks` was removed, so nothing
+  can ask the API for an artist's biggest song. The button sends the bare `spotify:artist:` URI
+  to the desktop app through AppleScript, and Spotify starts them with their most-played track.
+  No Premium, no API quota.
+- **"Not interested" changes nothing on your Spotify account.** It writes an id to this app's
+  own `suggestions.json` and that's all — nobody is unfollowed and nothing is deleted. It's
+  reversible: Undo in the window, or **Settings ▸ Artists to follow ▸ Hidden artists**.
+
+A refresh costs about 40 requests (six top-list reads, your followed artists, then one artist
+lookup each for artwork — the batch endpoint for that was removed too, so there's a cap of 30
+per refresh and the footer says when it applied). Results are cached for six hours, so
+reopening the window is free.
+
+Its assumptions have a probe too — including the one that decides whether the play button can
+exist at all:
+
+```sh
+./scripts/probe-artist-suggestions.py            # read-only
+./scripts/probe-artist-suggestions.py --play-test  # briefly takes over playback, then restores it
+```
+
 ## Status
 
 - **Phase 1:** login, now-playing popover (art, scrubber, transport + shuffle), settings
@@ -148,9 +188,11 @@ There's a read-only probe for the API assumptions behind all of this:
 - **Clear Your Episodes** (Settings ▸ Library): **irreversible** — the only record of what
   was removed is the episode URIs in the debug log.
 - **New From Followed** (Settings ▸ New releases).
+- **Artists to Follow** (right-click ▸ Artists to Follow…): its own window; reads and additive
+  follows only, and "Not interested" is local.
 - **Phase 3:** notarized GitHub distribution; see `ROADMAP.md`.
 
 > **Upgrading?** Scopes can't be widened by a token refresh, so a build that adds one needs a
 > single **log out and log back in**. Settings will say so when it applies — currently for
-> Clear Your Episodes (`user-library-*`) and New From Followed (`user-follow-read`).
-> Everything else keeps working meanwhile.
+> Clear Your Episodes (`user-library-*`), New From Followed (`user-follow-read`), and Artists
+> to Follow (`user-top-read`, `user-follow-modify`). Everything else keeps working meanwhile.

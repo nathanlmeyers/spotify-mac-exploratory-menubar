@@ -62,6 +62,11 @@ targets:
       # The radar's persistence rules are subtle enough to test directly; its init takes an
       # optional directory so the suite never touches the real Application Support state.
       - path: Sources/SpotifyMenuBar/State/NewReleaseStore.swift
+      - path: Sources/SpotifyMenuBar/Suggestions/ArtistSuggestionLogic.swift
+      # Like the radar's store, this one takes an optional directory so the suite never
+      # touches the real Application Support state — and its dismissal list is the only
+      # user-authored state in the app with no copy anywhere else.
+      - path: Sources/SpotifyMenuBar/State/SuggestedArtistStore.swift
       - path: Sources/SpotifyMenuBar/Support/DebugLog.swift
 
 schemes:

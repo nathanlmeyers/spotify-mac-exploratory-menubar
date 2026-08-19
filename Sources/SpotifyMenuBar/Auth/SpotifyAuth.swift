@@ -48,6 +48,14 @@ final class SpotifyAuth: ObservableObject {
     /// Reading your followed artists (`GET /me/following?type=artist`) for the New From
     /// Followed release radar.
     static let followScopes = ["user-follow-read"]
+    /// Artists to Follow: `user-top-read` for `GET /me/top/artists` and `/me/top/tracks`,
+    /// which is where the suggestions come from, and `user-follow-modify` for the Follow
+    /// button (`PUT /me/library` with an artist URI — the per-type `PUT /me/following` was
+    /// removed in February 2026).
+    ///
+    /// Note there is no unfollow anywhere in this app, so `user-follow-modify` is only ever
+    /// used additively.
+    static let suggestScopes = ["user-top-read", "user-follow-modify"]
 
     static let allScopes = [
         "playlist-read-private",
@@ -56,7 +64,7 @@ final class SpotifyAuth: ObservableObject {
         "playlist-modify-private",
         "user-read-playback-state",
         "user-read-currently-playing",
-    ] + libraryScopes + followScopes
+    ] + libraryScopes + followScopes + suggestScopes
 
     static let scopes = allScopes.joined(separator: " ")
 
@@ -67,6 +75,8 @@ final class SpotifyAuth: ObservableObject {
     @Published private(set) var hasLibraryScopes = false
     /// Likewise for `user-follow-read`, added with the New From Followed release radar.
     @Published private(set) var hasFollowScopes = false
+    /// Likewise for `user-top-read` + `user-follow-modify`, added with Artists to Follow.
+    @Published private(set) var hasSuggestScopes = false
     /// Every scope this build wants that the stored token doesn't carry. Empty when current.
     /// One list so a future scope addition only has to extend `allScopes`.
     @Published private(set) var missingScopes: [String] = []
@@ -103,6 +113,10 @@ final class SpotifyAuth: ObservableObject {
         let granted: (String) -> Bool = { [tokens] in tokens?.grants($0) ?? false }
         hasLibraryScopes = Self.libraryScopes.allSatisfy(granted)
         hasFollowScopes = Self.followScopes.allSatisfy(granted)
+        // Artists to Follow reads the followed set too, so it needs the follow-read scope on
+        // top of its own two — otherwise it can't tell who you already follow and would
+        // suggest people you do.
+        hasSuggestScopes = (Self.suggestScopes + Self.followScopes).allSatisfy(granted)
         missingScopes = tokens == nil ? [] : Self.allScopes.filter { !granted($0) }
     }
 
