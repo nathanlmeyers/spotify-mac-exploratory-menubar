@@ -31,6 +31,25 @@ final class Settings: ObservableObject {
     @Published var skipAlreadyReviewed: Bool { didSet { d.set(skipAlreadyReviewed, forKey: K.skipReviewed) } }
     @Published var keepHeldPanelOpen: Bool { didSet { d.set(keepHeldPanelOpen, forKey: K.keepHeldOpen) } }
 
+    // MARK: New releases ("New From Followed")
+    @Published var newReleasesEnabled: Bool { didSet { d.set(newReleasesEnabled, forKey: K.nrEnabled) } }
+    @Published var newReleasesPlaylistId: String? { didSet { d.set(newReleasesPlaylistId, forKey: K.nrPlaylistId) } }
+    @Published var newReleasesPlaylistName: String? { didSet { d.set(newReleasesPlaylistName, forKey: K.nrPlaylistName) } }
+    @Published var newReleasesIncludeFeatures: Bool { didSet { d.set(newReleasesIncludeFeatures, forKey: K.nrFeatures) } }
+    @Published var newReleasesPrimaryArtistOnly: Bool { didSet { d.set(newReleasesPrimaryArtistOnly, forKey: K.nrPrimaryOnly) } }
+    @Published var newReleasesExcludeRemixes: Bool { didSet { d.set(newReleasesExcludeRemixes, forKey: K.nrNoRemixes) } }
+    @Published var newReleasesExcludeCompilations: Bool { didSet { d.set(newReleasesExcludeCompilations, forKey: K.nrNoComps) } }
+    @Published var newReleasesLookbackDays: Int { didSet { d.set(newReleasesLookbackDays, forKey: K.nrLookback) } }
+
+    /// The filter set as the scanner's pure logic wants it.
+    var newReleaseFilters: NewReleaseFilters {
+        NewReleaseFilters(includeFeatures: newReleasesIncludeFeatures,
+                          primaryArtistOnly: newReleasesPrimaryArtistOnly,
+                          excludeRemixes: newReleasesExcludeRemixes,
+                          excludeCompilations: newReleasesExcludeCompilations,
+                          lookbackDays: newReleasesLookbackDays)
+    }
+
     // MARK: System
     @Published var launchAtLogin: Bool {
         didSet { d.set(launchAtLogin, forKey: K.launchAtLogin); applyLaunchAtLogin() }
@@ -72,6 +91,16 @@ final class Settings: ObservableObject {
         skipIfInTarget = bool(K.skipInTarget, default: false)
         skipAlreadyReviewed = bool(K.skipReviewed, default: false)
         keepHeldPanelOpen = bool(K.keepHeldOpen, default: true)
+
+        newReleasesEnabled = bool(K.nrEnabled, default: false)
+        newReleasesPlaylistId = defaults.string(forKey: K.nrPlaylistId)
+        newReleasesPlaylistName = defaults.string(forKey: K.nrPlaylistName)
+        newReleasesIncludeFeatures = bool(K.nrFeatures, default: true)
+        newReleasesPrimaryArtistOnly = bool(K.nrPrimaryOnly, default: false)
+        newReleasesExcludeRemixes = bool(K.nrNoRemixes, default: true)
+        newReleasesExcludeCompilations = bool(K.nrNoComps, default: true)
+        let storedLookback = defaults.integer(forKey: K.nrLookback)
+        newReleasesLookbackDays = storedLookback > 0 ? storedLookback : 14
 
         launchAtLogin = bool(K.launchAtLogin, default: true)
 
@@ -150,6 +179,14 @@ final class Settings: ObservableObject {
         /// Retired auto-delete flag; kept only so init() can clear it. Never read.
         static let retiredSkipInTargetRemove = "skipInTargetAlsoRemove"
         static let keepHeldOpen = "keepHeldPanelOpen"
+        static let nrEnabled = "newReleasesEnabled"
+        static let nrPlaylistId = "newReleasesPlaylistId"
+        static let nrPlaylistName = "newReleasesPlaylistName"
+        static let nrFeatures = "newReleasesIncludeFeatures"
+        static let nrPrimaryOnly = "newReleasesPrimaryArtistOnly"
+        static let nrNoRemixes = "newReleasesExcludeRemixes"
+        static let nrNoComps = "newReleasesExcludeCompilations"
+        static let nrLookback = "newReleasesLookbackDays"
         static let launchAtLogin = "launchAtLogin"
         /// Bundle path of the login item we registered, so we can spot a moved build.
         static let registeredBundlePath = "registeredLoginItemBundlePath"

@@ -45,21 +45,31 @@ final class SpotifyAuth: ObservableObject {
     /// Reading and emptying "Your Episodes" (the saved-podcast-episodes library, not a playlist)
     /// needs the library scopes: `GET /me/episodes` requires read, `DELETE /me/library` modify.
     static let libraryScopes = ["user-library-read", "user-library-modify"]
+    /// Reading your followed artists (`GET /me/following?type=artist`) for the New From
+    /// Followed release radar.
+    static let followScopes = ["user-follow-read"]
 
-    static let scopes = ([
+    static let allScopes = [
         "playlist-read-private",
         "playlist-read-collaborative",
         "playlist-modify-public",
         "playlist-modify-private",
         "user-read-playback-state",
         "user-read-currently-playing",
-    ] + libraryScopes).joined(separator: " ")
+    ] + libraryScopes + followScopes
+
+    static let scopes = allScopes.joined(separator: " ")
 
     @Published private(set) var isAuthorized = false
     @Published private(set) var lastError: String?
     /// False when we're running on a token minted before the library scopes were added. The
     /// only fix is a fresh login — see `TokenBundle.grantedScopes`.
     @Published private(set) var hasLibraryScopes = false
+    /// Likewise for `user-follow-read`, added with the New From Followed release radar.
+    @Published private(set) var hasFollowScopes = false
+    /// Every scope this build wants that the stored token doesn't carry. Empty when current.
+    /// One list so a future scope addition only has to extend `allScopes`.
+    @Published private(set) var missingScopes: [String] = []
 
     private let clientID: String
     private let keychainAccount = "spotify-oauth"
@@ -90,7 +100,10 @@ final class SpotifyAuth: ObservableObject {
 
     private func publishTokenState() {
         isAuthorized = (tokens != nil)
-        hasLibraryScopes = Self.libraryScopes.allSatisfy { tokens?.grants($0) ?? false }
+        let granted: (String) -> Bool = { [tokens] in tokens?.grants($0) ?? false }
+        hasLibraryScopes = Self.libraryScopes.allSatisfy(granted)
+        hasFollowScopes = Self.followScopes.allSatisfy(granted)
+        missingScopes = tokens == nil ? [] : Self.allScopes.filter { !granted($0) }
     }
 
     /// False if the developer hasn't filled in their Client ID yet.
