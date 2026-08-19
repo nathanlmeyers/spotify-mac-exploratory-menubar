@@ -64,6 +64,7 @@ struct NowPlayingView: View {
     private var topBar: some View {
         HStack {
             Spacer()
+            suggestedArtistsButton
             settingsGear
         }
     }
@@ -73,6 +74,19 @@ struct NowPlayingView: View {
         Button { NotificationCenter.default.post(name: .openSettings, object: nil) } label: {
             Image(systemName: "gearshape")
         }.help("Settings").buttonStyle(.borderless)
+    }
+
+    /// Opens the Artists to Follow list. Hidden until the login can actually reach it, so the
+    /// panel doesn't offer a button whose only outcome is a "log in first" screen.
+    @ViewBuilder
+    private var suggestedArtistsButton: some View {
+        if model.isAuthorized {
+            Button { NotificationCenter.default.post(name: .openSuggestedArtists, object: nil) } label: {
+                Image(systemName: "person.badge.plus")
+            }
+            .help("Artists to Follow — artists you listen to but don't follow")
+            .buttonStyle(.borderless)
+        }
     }
 
     // MARK: Non-player states
@@ -157,6 +171,7 @@ struct NowPlayingView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(np.name.isEmpty ? "—" : np.name).font(.headline).lineLimit(2)
                     Spacer(minLength: 0)
+                    suggestedArtistsButton
                     settingsGear
                 }
                 Text(model.artistText(for: np)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

@@ -42,6 +42,9 @@ final class SpotifyProvider {
     func previous() { local.previous() }
     func seek(to seconds: Double) { local.seek(to: seconds) }
     func setShuffle(_ on: Bool) { local.setShuffle(on) }
+    /// Play a track or artist URI locally. Artist URIs start with the artist's most-played
+    /// song, which is how the suggestion list plays someone without a top-tracks endpoint.
+    func play(uri: String) { local.play(uri: uri) }
     func activateApp() { local.activateSpotify() }
 
     // MARK: Account & playlists

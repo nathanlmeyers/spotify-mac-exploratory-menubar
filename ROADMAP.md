@@ -27,10 +27,14 @@ See `android/README.md`.
 
 ## More toolkit features
 The app is a home for Spotify features Spotify doesn't ship. Shipped so far: Discovery
-mode, New From Followed, Clear Your Episodes. Candidates:
+mode, New From Followed, Clear Your Episodes, Artists to Follow. Candidates:
 - Notify on a new find, and a per-artist mute list for the release radar.
 - Bulk playlist dedupe.
 - "What playlist is this song in?" across your library.
+
+`SuggestedArtistStore.notInterested` is already a per-artist mute list in everything but
+name; the radar's version could share it or copy the shape rather than inventing a third
+dismissal mechanism.
 
 Each feature should keep its decision logic in a pure type registered in the test target's
 source list (see `NewReleaseLogic`), so it can be tested without launching the app.

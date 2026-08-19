@@ -62,6 +62,18 @@ typedef NS_ENUM(NSInteger, SpotifyPlayerState) {
 - (void)previousTrack;
 - (void)seekTo:(double)seconds;
 
+/// Start playback of a Spotify URI.
+///
+/// Wraps the sdef's `playTrack:inContext:`, which despite the name accepts an **artist** URI
+/// as well as a track one — verified against the running app: sending `spotify:artist:<id>`
+/// starts that artist beginning with their most-played song. That is the whole reason the
+/// "Artists to Follow" play button can exist: February 2026 removed
+/// `GET /artists/{id}/top-tracks` and the `popularity` field, so the Web API can no longer say
+/// which song is an artist's biggest — but Spotify's own client still knows.
+///
+/// Local Apple event, so it needs no Premium subscription and costs no API quota.
+- (void)playURI:(NSString *)uri;
+
 @end
 
 NS_ASSUME_NONNULL_END

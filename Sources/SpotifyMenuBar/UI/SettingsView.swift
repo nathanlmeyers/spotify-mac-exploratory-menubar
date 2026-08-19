@@ -10,6 +10,7 @@ struct SettingsView: View {
             account
             curationSection
             newReleasesSection
+            suggestedArtistsSection
             librarySection
             menuBarSection
             discoverySection
@@ -118,6 +119,63 @@ struct SettingsView: View {
             }
         } header: {
             Text("New releases")
+        }
+    }
+
+    // MARK: Artists to follow
+
+    /// The list itself lives in its own window; this section is the way in, plus the only place
+    /// a dismissed artist can be brought back once the window's Undo has gone.
+    @ViewBuilder private var suggestedArtistsSection: some View {
+        Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Artists you listen to but don't follow")
+                    caption("Ranked from your top artists and top tracks. Following one also widens what New From Followed sweeps.")
+                }
+                Spacer()
+                Button("Open…") {
+                    NotificationCenter.default.post(name: .openSuggestedArtists, object: nil)
+                }
+                .controlSize(.small)
+                .disabled(!model.isAuthorized)
+            }
+
+            if model.isAuthorized && !model.hasSuggestScopes {
+                // A refresh can't widen scopes, so the only fix is a fresh login.
+                caption("This needs permission to read your top artists and to follow someone. Log out and log back in to grant it.")
+                HStack {
+                    Spacer()
+                    Button("Log out") { model.logout() }.controlSize(.small)
+                }
+            }
+
+            if model.suggestions.dismissedCount > 0 {
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(model.suggestions.dismissedCount) artist\(model.suggestions.dismissedCount == 1 ? "" : "s") hidden")
+                        // Worth stating plainly: "Not interested" looks like an unfollow and
+                        // isn't one. Nothing left the account, so nothing needs undoing there.
+                        caption("Hidden only from this list — nothing on your Spotify account was changed.")
+                    }
+                    Spacer()
+                    Button("Show all again") { model.suggestions.restoreAllDismissed() }
+                        .controlSize(.small)
+                }
+                DisclosureGroup("Hidden artists") {
+                    ForEach(model.suggestions.dismissedArtists(), id: \.id) { artist in
+                        HStack {
+                            Text(artist.name).font(.callout)
+                            Spacer()
+                            Button("Restore") { model.suggestions.restore(artistId: artist.id) }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Artists to follow")
         }
     }
 

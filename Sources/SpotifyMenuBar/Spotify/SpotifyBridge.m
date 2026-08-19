@@ -192,4 +192,14 @@ static NSString *_Nullable SBFirstString(NSDictionary *props, NSArray<NSString *
     [self setPlayerPosition:seconds];
 }
 
+- (void)playURI:(NSString *)uri {
+    if (uri.length == 0) { return; }
+    if (!self.isRunning) { return; }
+    // `inContext:` is optional in the sdef; nil means "no surrounding context", which for an
+    // artist URI is what we want — Spotify picks the artist's own running order rather than
+    // continuing whatever playlist happened to be open.
+    @try { [self.app playTrack:uri inContext:nil]; }
+    @catch (__unused NSException *e) {}
+}
+
 @end

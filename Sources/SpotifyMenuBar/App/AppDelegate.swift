@@ -4,6 +4,7 @@ import Combine
 
 extension Notification.Name {
     static let openSettings = Notification.Name("SpotifyMenuBar.openSettings")
+    static let openSuggestedArtists = Notification.Name("SpotifyMenuBar.openSuggestedArtists")
 }
 
 @MainActor
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel()
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
+    private var suggestedArtistsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     // One borderless panel serves both the manual click and the discovery hold; it hugs
     // the menu bar (no arrow/gap like NSPopover) and renders standard vs held from reviewState.
@@ -42,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings), name: .openSettings, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSuggestedArtists), name: .openSuggestedArtists, object: nil
         )
 
         // Keep the menu bar title in sync with everything it renders: playback, the (late-
@@ -101,6 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showContextMenu() {
         let menu = NSMenu()
+        menu.addItem(withTitle: "Artists to Follow…", action: #selector(openSuggestedArtists),
+                     keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Spotify Menu Bar", action: #selector(quit), keyEquivalent: "q").target = self
@@ -149,6 +156,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The Artists to Follow list.
+    ///
+    /// A resizable window of its own rather than a Settings section: it's a scrolling,
+    /// image-heavy list you work through a row at a time, which the fixed 460×560 Settings form
+    /// has no room for. Kept alive between openings (`isReleasedWhenClosed = false`) so closing
+    /// and reopening doesn't re-fetch — the engine's staleness window decides that, not the
+    /// window's lifetime.
+    @objc private func openSuggestedArtists() {
+        if suggestedArtistsWindow == nil {
+            let host = NSHostingController(rootView: SuggestedArtistsView().environmentObject(model))
+            let window = NSWindow(contentViewController: host)
+            window.title = "Artists to Follow"
+            window.styleMask = [.titled, .closable, .resizable]
+            window.setContentSize(NSSize(width: 520, height: 640))
+            window.isReleasedWhenClosed = false
+            suggestedArtistsWindow = window
+            window.center()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        suggestedArtistsWindow?.makeKeyAndOrderFront(nil)
+        // Re-check on every open, not just the first: the window persists, so a list built an
+        // hour ago would otherwise sit there until the user pressed Refresh.
+        model.suggestions.refreshIfStale()
     }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }

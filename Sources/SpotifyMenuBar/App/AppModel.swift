@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit   // NSWorkspace, for opening an artist's page in Spotify
 
 /// Proof that a playlist removal was initiated by the user pressing a button.
 ///
@@ -42,6 +43,9 @@ final class AppModel: ObservableObject {
     private let newReleaseStore: NewReleaseStore
     /// The New From Followed release radar. Exposed so Settings can drive and observe it.
     let newReleases: NewReleaseScanner
+    private let suggestedArtistStore: SuggestedArtistStore
+    /// The Artists to Follow list. Exposed so its window and Settings can drive and observe it.
+    let suggestions: ArtistSuggestionEngine
 
     @Published var nowPlaying: NowPlaying?
     @Published var source: SourceContext = .none
@@ -110,11 +114,16 @@ final class AppModel: ObservableObject {
         self.newReleaseStore = newReleaseStore
         self.newReleases = NewReleaseScanner(api: api, auth: auth, settings: settings,
                                              store: newReleaseStore)
+        let suggestedArtistStore = SuggestedArtistStore()
+        self.suggestedArtistStore = suggestedArtistStore
+        self.suggestions = ArtistSuggestionEngine(api: api, auth: auth,
+                                                  store: suggestedArtistStore)
 
         // Re-publish nested ObservableObject changes so SwiftUI views refresh.
         auth.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         newReleases.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        suggestions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
 
         // Switching destination playlists must not carry the per-playlist caches across, or the
         // new playlist starts out empty and stays that way.
@@ -193,6 +202,9 @@ final class AppModel: ObservableObject {
     var hasLibraryScopes: Bool { auth.hasLibraryScopes }
     /// Likewise for reading followed artists, which the release radar needs.
     var hasFollowScopes: Bool { auth.hasFollowScopes }
+    /// Likewise for reading your top artists/tracks and following someone, which the Artists
+    /// to Follow list needs.
+    var hasSuggestScopes: Bool { auth.hasSuggestScopes }
     var isSpotifyRunning: Bool { provider.isAppRunning }
 
     // MARK: Lifecycle
@@ -449,6 +461,48 @@ final class AppModel: ObservableObject {
     func seek(to seconds: Double) { provider.seek(to: seconds); refreshSoon() }
     func openSpotify() { provider.activateApp() }
 
+    // MARK: Artists to Follow
+    //
+    // Every intent here is additive or local. There is no unfollow: "Not interested" only
+    // writes to this app's own JSON, and the Follow button only ever adds. That's the same
+    // property `UserRemovalIntent` enforces for playlist and library deletions — this feature
+    // simply has no destructive call to gate.
+
+    /// Play a suggested artist through the Spotify desktop app.
+    ///
+    /// Sends the bare `spotify:artist:` URI and lets Spotify pick the song, which is the only
+    /// way left to play "their biggest track": February 2026 removed
+    /// `GET /artists/{id}/top-tracks` and stripped `popularity` from every object, so the Web
+    /// API can't rank an artist's songs at all. The desktop app still can, and this costs no
+    /// quota and needs no Premium.
+    func playArtist(id: String) {
+        provider.play(uri: ArtistSuggestionLogic.artistURI(id: id))
+        refreshSoon()
+    }
+
+    /// Open an artist's page. Prefers the desktop app; the web player is the fallback for a
+    /// Mac where the `spotify:` scheme isn't registered.
+    func openArtistInSpotify(id: String) {
+        if let appURL = URL(string: ArtistSuggestionLogic.artistURI(id: id)),
+           NSWorkspace.shared.urlForApplication(toOpen: appURL) != nil {
+            NSWorkspace.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: ArtistSuggestionLogic.artistWebURL(id: id)) {
+            NSWorkspace.shared.open(webURL)
+        }
+    }
+
+    func followSuggested(id: String, name: String) {
+        Task {
+            await suggestions.follow(artistId: id)
+            setStatus("Following \(name).")
+        }
+    }
+
+    /// Local only — takes the artist out of this list and touches nothing on Spotify.
+    func dismissSuggested(id: String) { suggestions.dismiss(artistId: id) }
+
     // MARK: Auth
 
     func login() { auth.beginLogin() }
@@ -461,6 +515,7 @@ final class AppModel: ObservableObject {
         lastSourceId = nil
         discovery.reset()
         clearEpisodes = .idle    // never leave another account's episode count on screen
+        suggestions.reset()      // nor another account's listening history
     }
 
     // MARK: Curation

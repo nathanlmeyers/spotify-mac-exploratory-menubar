@@ -81,6 +81,10 @@ final class LocalSpotifyController {
     func seek(to seconds: Double) { client.write("seek") { $0.seek(to: seconds) } }
     func setShuffle(_ on: Bool) { client.write("shuffle") { $0.shuffling = on } }
 
+    /// Start playing a Spotify URI — a track, or an **artist**, in which case Spotify begins
+    /// with their most-played song. See `SpotifyBridge.playURI:`.
+    func play(uri: String) { client.write("playURI") { $0.playURI(uri) } }
+
     /// Deliberately NOT routed through the bridge queue: this is a Launch Services call rather
     /// than an Apple event, and "Open Spotify" has to keep working precisely when the bridge is
     /// wedged — that's the moment the user most wants it.
