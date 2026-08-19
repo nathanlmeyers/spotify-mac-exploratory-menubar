@@ -52,10 +52,30 @@ final class NewReleaseStore {
             lastSummary = try c.decodeIfPresent(String.self, forKey: .lastSummary)
             playlistId = try c.decodeIfPresent(String.self, forKey: .playlistId)
         }
+
+        /// Fold in a copy of the file written by another process.
+        ///
+        /// Only the grow-only sets merge. They can't lose either side's work under a union,
+        /// and `addedTrackIds` is the one field where losing an entry has a visible cost — it
+        /// is what stops the radar re-adding a track the user deleted by hand. The scalars stay
+        /// ours: this instance is still running, so its view is the more recent one.
+        ///
+        /// Returns without doing anything if the two copies are pointed at different
+        /// destination playlists, because every set here means "…for *that* playlist".
+        mutating func formUnion(with other: Store) {
+            guard other.playlistId == playlistId else { return }
+            seenAlbumKeys.formUnion(other.seenAlbumKeys)
+            addedTrackIds.formUnion(other.addedTrackIds)
+            guestCrawls.merge(other.guestCrawls) { mine, _ in mine }
+        }
     }
 
     private var store = Store()
     private let fileURL: URL
+
+    /// The file's modification date as of our last read or write. A different value on disk means
+    /// another process wrote in between — see `save(merging:)`.
+    private var lastKnownModification: Date?
 
     /// `directory` exists so tests can point at a temporary one. The app always takes the
     /// default: these rules are subtle enough to be worth testing, and a suite that wrote to the
@@ -172,7 +192,7 @@ final class NewReleaseStore {
         store.lastScanAt = nil
         store.resumeArtistId = nil
         DebugLog.log("new-releases: destination changed to \(playlistId ?? "none"); cleared caches, next scan is due")
-        save()
+        save(merging: false)
     }
 
     /// Wipe the album caches — the "rescan from scratch" affordance behind the filter controls,
@@ -194,12 +214,13 @@ final class NewReleaseStore {
         store.lastScanAt = nil
         store.resumeArtistId = nil
         store.lastSummary = nil
-        save()
+        save(merging: false)
     }
 
     // MARK: Persistence
 
     private func load() {
+        lastKnownModification = modificationDate()
         // File absent → legitimate first run; start empty.
         guard let data = try? Data(contentsOf: fileURL) else { return }
         do {
@@ -213,8 +234,33 @@ final class NewReleaseStore {
         }
     }
 
-    private func save() {
+    /// - Parameter merging: whether to fold in a concurrent writer's additions first.
+    ///
+    ///   Writes are already atomic, so the file can never be torn — but two processes each
+    ///   holding a whole in-memory copy still means the second one to save silently discards
+    ///   whatever the first added. `InstanceGuard` makes that nearly impossible now; this closes
+    ///   the seconds-wide window while an outgoing copy is still winding down.
+    ///
+    ///   The clearing operations pass `false`. Merging there would re-import the very entries
+    ///   they exist to drop, turning a deliberate reset into a no-op.
+    private func save(merging: Bool = true) {
+        if merging, let onDisk = concurrentlyWrittenStore() { store.formUnion(with: onDisk) }
         guard let data = try? JSONEncoder().encode(store) else { return }
         try? data.write(to: fileURL, options: .atomic)
+        lastKnownModification = modificationDate()
+    }
+
+    /// The on-disk store, but only when someone else has written since we last touched the file.
+    private func concurrentlyWrittenStore() -> Store? {
+        guard let current = modificationDate(), current != lastKnownModification,
+              let data = try? Data(contentsOf: fileURL),
+              let onDisk = try? JSONDecoder().decode(Store.self, from: data)
+        else { return nil }
+        DebugLog.log("NewReleaseStore: newreleases.json changed underneath us; merging before save")
+        return onDisk
+    }
+
+    private func modificationDate() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
     }
 }
