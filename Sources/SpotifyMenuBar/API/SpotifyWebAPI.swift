@@ -115,7 +115,10 @@ final class SpotifyWebAPI {
     /// All track URIs in a playlist (paginated) — used for duplicate detection.
     /// Uses the Feb-2026 `/items` endpoint; the nested object was renamed `track` -> `item`
     /// (we read either to stay robust).
-    func playlistTrackURIs(id: String) async throws -> Set<String> {
+    ///
+    /// A big playlist is dozens of requests, so callers under a request budget (the release
+    /// radar) pass `pace` to throttle between pages.
+    func playlistTrackURIs(id: String, pace: (() async -> Void)? = nil) async throws -> Set<String> {
         struct Page: Decodable {
             struct Item: Decodable {
                 let item: Inner?
@@ -128,7 +131,7 @@ final class SpotifyWebAPI {
         }
         var uris = Set<String>()
         try await paginate(from: urlForPath("/playlists/\(id)/items", query: [.init(name: "limit", value: "100")]),
-                           next: \Page.next) { page in
+                           next: \Page.next, pace: pace) { page in
             for entry in page.items { if let uri = entry.uri { uris.insert(uri) } }
         }
         return uris
@@ -232,8 +235,13 @@ final class SpotifyWebAPI {
     }
 
     // MARK: - Request plumbing
+    //
+    // Module-internal rather than private so `SpotifyWebAPI+NewReleases.swift` can build on the
+    // same primitives — in particular the 429 gate in `authorizedData`, which the release radar
+    // depends on to park rather than hammer. A second client with its own request path would
+    // sidestep that backoff entirely.
 
-    private func urlForPath(_ path: String, query: [URLQueryItem] = []) -> URL {
+    func urlForPath(_ path: String, query: [URLQueryItem] = []) -> URL {
         var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query }
         return comps.url!
@@ -241,7 +249,7 @@ final class SpotifyWebAPI {
 
     /// One authorized request: token + Bearer header + optional JSON body. No status check —
     /// callers that need special-case statuses (204) inspect the response themselves.
-    private func authorizedData(for url: URL, method: String = "GET",
+    func authorizedData(for url: URL, method: String = "GET",
                                 json: Any? = nil) async throws -> (Data, HTTPURLResponse?) {
         // Refuse locally while a 429 backoff is live — no token fetch, no network.
         if let until = rateLimitedUntil {
@@ -275,34 +283,40 @@ final class SpotifyWebAPI {
         }
     }
 
-    private func getJSON<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+    func getJSON<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         try await getJSON(absolute: urlForPath(path, query: query))
     }
 
-    private func getJSON<T: Decodable>(absolute url: URL) async throws -> T {
+    func getJSON<T: Decodable>(absolute url: URL) async throws -> T {
         let (data, http) = try await authorizedData(for: url)
         try throwIfError("GET \(url.path)", http, data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func send(_ path: String, method: String, json: Any) async throws {
+    func send(_ path: String, method: String, json: Any) async throws {
         let (data, http) = try await authorizedData(for: urlForPath(path), method: method, json: json)
         try throwIfError("\(method) \(path)", http, data)
     }
 
     /// Follow a paginated endpoint from `start`, feeding each decoded page to `consume`.
-    private func paginate<Page: Decodable>(from start: URL,
+    ///
+    /// `pace` runs after every request, so a caller that has to stay inside a request budget can
+    /// throttle pages it never sees individually. Without it, "one call" here can mean fifty
+    /// back-to-back requests.
+    func paginate<Page: Decodable>(from start: URL,
                                            next: (Page) -> String?,
+                                           pace: (() async -> Void)? = nil,
                                            _ consume: (Page) -> Void) async throws {
         var url: URL? = start
         while let current = url {
             let page: Page = try await getJSON(absolute: current)
+            await pace?()
             consume(page)
             url = next(page).flatMap { URL(string: $0) }
         }
     }
 
-    private func throwIfError(_ label: String, _ http: HTTPURLResponse?, _ data: Data) throws {
+    func throwIfError(_ label: String, _ http: HTTPURLResponse?, _ data: Data) throws {
         guard let http, !(200..<300).contains(http.statusCode) else { return }
         let body = String(data: data, encoding: .utf8) ?? ""
         DebugLog.log("API \(label) -> HTTP \(http.statusCode): \(body)")
