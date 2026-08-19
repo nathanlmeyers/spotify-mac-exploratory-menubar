@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Collapsed content view — three big buttons, nothing else.
+
+  This layout is the whole point of the app: Android shows lock-screen notifications collapsed,
+  and a *standard* notification hides its action buttons when collapsed. A custom content view is
+  drawn as-is, so putting the buttons here is what makes Add/Remove reachable from the lock screen
+  without expanding anything.
+
+  No track title: Spotify's own media notification sits right above this one showing the song, so
+  repeating it here only stole width from the buttons. The playlist a Remove would act on still
+  appears in the expanded view (notification_curator_big.xml).
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:baselineAligned="false"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <TextView
+        android:id="@+id/action_add"
+        style="@style/CuratorNotificationGlyph"
+        android:contentDescription="@string/action_add"
+        android:text="@string/glyph_add" />
+
+    <TextView
+        android:id="@+id/action_remove"
+        style="@style/CuratorNotificationGlyph"
+        android:contentDescription="@string/action_remove"
+        android:text="@string/glyph_remove" />
+
+    <TextView
+        android:id="@+id/action_skip"
+        style="@style/CuratorNotificationGlyph"
+        android:contentDescription="@string/action_skip"
+        android:text="@string/glyph_skip" />
+
+</LinearLayout>

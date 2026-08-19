@@ -13,3 +13,11 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Android — SDK path + per-developer Spotify Client ID; never commit
+android/local.properties
+android/.gradle/
+android/.kotlin/
+android/app/release/
+.idea/
+*.iml

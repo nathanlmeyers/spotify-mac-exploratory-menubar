@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The outline that makes a notification button look like a button.
+
+  Flat text on a notification reads as a label, not a target — and this is a lock-screen control
+  hit with a thumb, often without looking straight at it. The border is the affordance.
+
+  Neutral translucent grey rather than a theme attribute, for the same reason styles.xml gives for
+  using text instead of icons: a RemoteViews drawable can't be relied on to resolve
+  ?android:attr/... against the notification's theme, and a border that vanishes in one of
+  light/dark mode is worse than no border at all. Grey at low alpha darkens a light background and
+  lightens a dark one, so it shows up either way without resolving anything.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="22dp" />
+    <solid android:color="#14808080" />
+    <stroke
+        android:width="1dp"
+        android:color="#66808080" />
+</shape>

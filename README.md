@@ -13,6 +13,9 @@ you're listening to) controls, transport, and a seek scrubber. A **Discovery mod
 - Built behind a `MusicProvider` abstraction so other services (Apple Music, …) can be
   added later — see `ROADMAP.md`.
 
+There is also an **Android build** in [`android/`](android/README.md), which puts the same
+Add/Remove on the Pixel lock screen. It shares this repo's Spotify app registration and Client ID.
+
 ## Requirements
 
 - macOS 13+

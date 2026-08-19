@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Spotify Curator</string>
+    <string name="notification_access_label">Spotify Curator</string>
+
+    <!-- Notification actions. Kept short: three of them share one collapsed row. -->
+    <string name="action_add">Add</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_skip">Skip</string>
+
+    <!--
+      Collapsed-row glyphs. Plain ASCII/BMP characters guaranteed to be in the system font —
+      an unrenderable glyph on the lock screen is an invisible button. U+2212 MINUS SIGN rather
+      than a hyphen so it optically matches the plus.
+    -->
+    <string name="glyph_add" translatable="false">+</string>
+    <string name="glyph_remove" translatable="false">−</string>
+    <string name="glyph_skip" translatable="false">»</string>
+
+    <!--
+      The Discovery switch in the expanded view. The label names the *current* state rather than
+      the action, so a glance answers "is it on?" — the question you actually have when the music
+      just stopped. What a press does is spelled out in the contentDescription instead.
+    -->
+    <string name="action_discovery_on">Discovery on</string>
+    <string name="action_discovery_off">Discovery off</string>
+    <string name="action_discovery_on_description">Discovery is on. Turn it off.</string>
+    <string name="action_discovery_off_description">Discovery is off. Turn it on.</string>
+
+    <string name="channel_curator_name">Curator controls</string>
+    <string name="channel_curator_description">The ongoing Add / Remove / Skip controls, including on the lock screen.</string>
+</resources>

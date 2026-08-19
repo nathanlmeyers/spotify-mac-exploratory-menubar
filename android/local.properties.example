@@ -1,0 +1,7 @@
+# Copy to `local.properties` (gitignored) and fill in.
+# Mirrors the macOS app's Secrets.xcconfig — same Spotify app, same Client ID.
+#
+# sdk.dir is written automatically by Android Studio; set it by hand for CLI-only builds.
+
+sdk.dir=/Users/YOUR_NAME/Library/Android/sdk
+spotify.clientId=
