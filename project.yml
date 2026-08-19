@@ -59,6 +59,9 @@ targets:
       - path: Sources/SpotifyMenuBar/API/RateLimit.swift
       - path: Sources/SpotifyMenuBar/Support/LibraryLogic.swift
       - path: Sources/SpotifyMenuBar/Discovery/NewReleaseLogic.swift
+      # Which copy of the app owns the menu bar. Pure Foundation precisely so the rule can be
+      # tested here rather than by launching four copies and watching the menu bar.
+      - path: Sources/SpotifyMenuBar/App/InstanceRanking.swift
       # The radar's persistence rules are subtle enough to test directly; its init takes an
       # optional directory so the suite never touches the real Application Support state.
       - path: Sources/SpotifyMenuBar/State/NewReleaseStore.swift

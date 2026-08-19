@@ -8,10 +8,21 @@ final class ReviewHistory {
     private struct Store: Codable {
         var seenBySource: [String: Set<String>] = [:]
         var targetMembership: [String: Set<String>] = [:]
+
+        /// Fold in a copy of the file written by another process. Both fields are grow-only on
+        /// every path that merges, so a per-key union can't lose either side's work.
+        mutating func formUnion(with other: Store) {
+            seenBySource.merge(other.seenBySource) { $0.union($1) }
+            targetMembership.merge(other.targetMembership) { $0.union($1) }
+        }
     }
 
     private var store = Store()
     private let fileURL: URL
+
+    /// The file's modification date as of our last read or write. A different value on disk means
+    /// another process wrote in between — see `save(merging:)`.
+    private var lastKnownModification: Date?
 
     init() {
         let dir = FileManager.default
@@ -53,11 +64,12 @@ final class ReviewHistory {
     func removeFromMembership(targetId: String, uri: String) {
         guard store.targetMembership[targetId]?.contains(uri) == true else { return }
         store.targetMembership[targetId]?.remove(uri)
-        save()
+        save(merging: false)
     }
 
     // MARK: Persistence
     private func load() {
+        lastKnownModification = modificationDate()
         // File absent → legitimate first run; start empty.
         guard let data = try? Data(contentsOf: fileURL) else { return }
         do {
@@ -71,8 +83,34 @@ final class ReviewHistory {
         }
     }
 
-    private func save() {
+    /// - Parameter merging: whether to fold in a concurrent writer's additions first.
+    ///
+    ///   Writes are already atomic, so the file can never be torn — but two processes each
+    ///   holding a whole in-memory copy still means the second one to save silently discards
+    ///   whatever the first added. `InstanceGuard` makes that nearly impossible now; this closes
+    ///   the seconds-wide window while an outgoing copy is still winding down.
+    ///
+    ///   `removeFromMembership` passes `false`: a union would re-import the URI it just dropped,
+    ///   and that cache is what auto-skip reads, so resurrecting an entry means going on skipping
+    ///   a song the user deliberately took out of the target.
+    private func save(merging: Bool = true) {
+        if merging, let onDisk = concurrentlyWrittenStore() { store.formUnion(with: onDisk) }
         guard let data = try? JSONEncoder().encode(store) else { return }
         try? data.write(to: fileURL, options: .atomic)
+        lastKnownModification = modificationDate()
+    }
+
+    /// The on-disk store, but only when someone else has written since we last touched the file.
+    private func concurrentlyWrittenStore() -> Store? {
+        guard let current = modificationDate(), current != lastKnownModification,
+              let data = try? Data(contentsOf: fileURL),
+              let onDisk = try? JSONDecoder().decode(Store.self, from: data)
+        else { return nil }
+        DebugLog.log("ReviewHistory: history.json changed underneath us; merging before save")
+        return onDisk
+    }
+
+    private func modificationDate() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
     }
 }

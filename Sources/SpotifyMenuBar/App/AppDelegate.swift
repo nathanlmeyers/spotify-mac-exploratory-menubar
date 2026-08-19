@@ -32,7 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        BuildInfo.logStartupBanner()
+        // The startup banner and the single-instance guard both run in main.swift now — the
+        // guard has to settle before AppModel is built, and the banner belongs with it so every
+        // process logs which build it is, including one that stands down immediately.
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.makeMenuBarIcon()
