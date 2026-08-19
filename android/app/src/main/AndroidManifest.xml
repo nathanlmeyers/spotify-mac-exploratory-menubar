@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- The optional "Vibrate on hold" alert, for when the phone is in a pocket. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+      Backs the Setup card's "Unrestricted battery" action. Play restricts this permission, which
+      doesn't apply here: the app is sideloaded, and a curator Android suspends mid-listen is a
+      curator that isn't there when you reach for it.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      Spotify is the one package we look for a MediaSession on. Android 11+ package
+      visibility hides it from queryIntentServices/getPackageInfo unless declared.
+    -->
+    <queries>
+        <package android:name="com.spotify.music" />
+    </queries>
+
+    <application
+        android:name=".CuratorApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SpotifyCurator">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          OAuth redirect target. `singleTask` + `noHistory` so returning from the Custom Tab
+          resumes the existing task and the callback activity never lingers in Recents with
+          the authorization code in its intent.
+        -->
+        <activity
+            android:name=".auth.AuthCallbackActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="${redirectHost}"
+                    android:scheme="${redirectScheme}" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Holds the ongoing notification. `specialUse` is the honest type: the app isn't playing
+          media, it's watching Spotify play it and keeping curation controls reachable.
+        -->
+        <service
+            android:name=".service.CuratorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps Add/Remove curation controls on the lock screen while Spotify plays." />
+        </service>
+
+        <!-- Target of the notification's Add/Remove/Skip buttons; fires without unlocking. -->
+        <receiver
+            android:name=".notify.ActionReceiver"
+            android:exported="false" />
+
+        <!--
+          Empty on purpose. Granting this service notification access is what unlocks
+          MediaSessionManager.getActiveSessions(ComponentName) for the *whole app* — the
+          calls themselves happen in CuratorService, not here. This is the Android analogue
+          of the macOS app's Automation (TCC) grant for controlling Spotify.app.
+        -->
+        <service
+            android:name=".media.NotificationAccessStub"
+            android:exported="true"
+            android:label="@string/notification_access_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>

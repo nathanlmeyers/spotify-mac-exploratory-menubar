@@ -23,6 +23,9 @@ Design notes:
   a `UserRemovalIntent`, which only a button handler in `AppModel` can construct — so an
   automated deletion is a compile error, not a comment someone can read past.
 
+There is also an **Android build** in [`android/`](android/README.md), which puts the same
+Add/Remove on the Pixel lock screen. It shares this repo's Spotify app registration and Client ID.
+
 ## Requirements
 
 - macOS 13+

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Text rather than icon buttons on purpose: a RemoteViews ImageView can't reliably resolve a
+      theme-attribute tint, so an icon risks being invisible in one of light/dark mode — on the
+      lock screen, where you can't tap what you can't see. The notification text appearances are
+      guaranteed to contrast with the notification background in both.
+
+      The border comes from @drawable/notification_button, so the ripple moves to `foreground`:
+      a View can only have one background, and losing the outline to keep the ripple would trade
+      the affordance you see before pressing for the one you see during.
+    -->
+    <style name="CuratorNotificationButton">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_margin">4dp</item>
+        <item name="android:minWidth">44dp</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">4dp</item>
+        <item name="android:paddingEnd">4dp</item>
+        <item name="android:textAppearance">@style/TextAppearance.Compat.Notification.Title</item>
+        <item name="android:background">@drawable/notification_button</item>
+        <item name="android:foreground">?android:attr/selectableItemBackground</item>
+    </style>
+
+    <!--
+      Collapsed-row buttons: one third of the width each, as large as the collapsed content area
+      allows. This is a lock-screen target hit with a thumb, often without looking directly at it,
+      so it wants to be as big as the row permits. Full labels live in the expanded view and, for
+      screen readers, in contentDescription.
+
+      48dp is the floor for a touch target; the collapsed content area won't give much more.
+    -->
+    <style name="CuratorNotificationGlyph" parent="CuratorNotificationButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingStart">0dp</item>
+        <item name="android:paddingEnd">0dp</item>
+        <item name="android:textSize">24sp</item>
+    </style>
+</resources>
