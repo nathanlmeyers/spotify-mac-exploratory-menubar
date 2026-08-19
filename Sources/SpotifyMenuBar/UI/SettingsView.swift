@@ -9,6 +9,7 @@ struct SettingsView: View {
         Form {
             account
             curationSection
+            newReleasesSection
             librarySection
             menuBarSection
             discoverySection
@@ -89,6 +90,129 @@ struct SettingsView: View {
     private var targetCaption: String {
         if let name = settings.targetPlaylistName { return "Adding to: \(name)" }
         return "Pick an editable playlist you own."
+    }
+
+    // MARK: New releases
+
+    /// The release radar: a daily sweep of followed artists into a playlist.
+    @ViewBuilder private var newReleasesSection: some View {
+        Section {
+            Toggle("Collect new music from artists I follow", isOn: $settings.newReleasesEnabled)
+            caption("Checks your followed artists once a day and adds anything they released — or were featured on — to a playlist. Only ever adds; it never removes anything.")
+
+            if settings.newReleasesEnabled {
+                if !model.isAuthorized {
+                    caption("Log in to Spotify to use this.")
+                } else if !model.hasFollowScopes {
+                    // A refresh can't widen scopes, so the only fix is a fresh login.
+                    caption("This needs permission to read your followed artists. Log out and log back in to grant it.")
+                    HStack {
+                        Spacer()
+                        Button("Log out") { model.logout() }.controlSize(.small)
+                    }
+                } else {
+                    destinationControls
+                    filterControls
+                    scanControls
+                }
+            }
+        } header: {
+            Text("New releases")
+        }
+    }
+
+    @ViewBuilder private var destinationControls: some View {
+        // Locked while a sweep is in flight: the scan captured the old destination when it
+        // started, so switching mid-run would keep appending over there while the caches were
+        // reset for the new one. The sweep is minutes at most; waiting it out is the whole fix.
+        Picker("Add to", selection: newReleasesTargetBinding) {
+            Text("None").tag("")
+            ForEach(model.editablePlaylists) { p in Text(p.name).tag(p.id) }
+        }
+        .disabled(model.newReleases.isRunning)
+        .help(model.newReleases.isRunning ? "Can't change this while a scan is running." : "")
+        HStack {
+            caption(settings.newReleasesPlaylistName.map { "Adding to: \($0)" }
+                    ?? "Pick a playlist, or let the app make one for you.")
+            Spacer()
+            Button("Create “New From Followed”") { model.createNewReleasesPlaylist() }
+                .controlSize(.small)
+                .disabled(model.isBusy || model.newReleases.isRunning)
+        }
+    }
+
+    @ViewBuilder private var filterControls: some View {
+        Group {
+            Toggle("Include songs they're featured on", isOn: $settings.newReleasesIncludeFeatures)
+                .help("Also collect tracks where they're a guest, not just their own releases. Costs more requests and takes a few days to sweep everyone.")
+            Toggle("Only when they're the main artist", isOn: $settings.newReleasesPrimaryArtistOnly)
+                .help("Require the followed artist to hold the first credit on the track.")
+            Toggle("Skip remixes", isOn: $settings.newReleasesExcludeRemixes)
+            Toggle("Skip compilations and greatest-hits", isOn: $settings.newReleasesExcludeCompilations)
+
+            Picker("Look back", selection: $settings.newReleasesLookbackDays) {
+                Text("1 week").tag(7)
+                Text("2 weeks").tag(14)
+                Text("1 month").tag(30)
+            }
+            .help("How far back a release can be dated and still count as new.")
+        }
+    }
+
+    @ViewBuilder private var scanControls: some View {
+        switch model.newReleases.state {
+        case .running(let message):
+            HStack {
+                ProgressView().controlSize(.small)
+                caption(message)
+            }
+
+        case .failed(let message):
+            Text(message).font(.caption).foregroundStyle(.red)
+            scanButtons
+
+        case .idle:
+            if let summary = model.newReleases.lastSummary {
+                caption(summary + (model.newReleases.lastScanAt.map { " — \(relative($0))" } ?? ""))
+            }
+            scanButtons
+        }
+    }
+
+    @ViewBuilder private var scanButtons: some View {
+        HStack {
+            // Filters are applied while scanning, so an already-scanned album is never
+            // reconsidered — changing a filter does nothing visible without a rescan.
+            Button("Rescan from scratch") { model.newReleases.resetAndRescan() }
+                .controlSize(.small)
+                .disabled(settings.newReleasesPlaylistId == nil)
+            Spacer()
+            Button("Scan now") { model.newReleases.scanNow() }
+                .controlSize(.small)
+                .disabled(settings.newReleasesPlaylistId == nil)
+        }
+    }
+
+    private var newReleasesTargetBinding: Binding<String> {
+        Binding(
+            get: { settings.newReleasesPlaylistId ?? "" },
+            set: { id in
+                if id.isEmpty {
+                    settings.newReleasesPlaylistId = nil
+                    settings.newReleasesPlaylistName = nil
+                    return
+                }
+                if let p = model.editablePlaylists.first(where: { $0.id == id }) {
+                    model.setNewReleasesTarget(p)
+                }
+            }
+        )
+    }
+
+    private func relative(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f.localizedString(for: date, relativeTo: Date())
     }
 
     // MARK: Library

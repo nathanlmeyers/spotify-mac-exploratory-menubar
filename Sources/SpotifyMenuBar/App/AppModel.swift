@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
     private let local = LocalSpotifyController()
     private let api: SpotifyWebAPI
     private let history = ReviewHistory()
+    private let newReleaseStore: NewReleaseStore
+    /// The New From Followed release radar. Exposed so Settings can drive and observe it.
+    let newReleases: NewReleaseScanner
 
     @Published var nowPlaying: NowPlaying?
     @Published var source: SourceContext = .none
@@ -98,13 +101,37 @@ final class AppModel: ObservableObject {
     init() {
         let auth = SpotifyAuth()
         self.auth = auth
-        self.settings = Settings()
-        self.api = SpotifyWebAPI(auth: auth)
+        let settings = Settings()
+        self.settings = settings
+        let api = SpotifyWebAPI(auth: auth)
+        self.api = api
         self.provider = SpotifyProvider(local: local, api: api)
+        let newReleaseStore = NewReleaseStore()
+        self.newReleaseStore = newReleaseStore
+        self.newReleases = NewReleaseScanner(api: api, auth: auth, settings: settings,
+                                             store: newReleaseStore)
 
         // Re-publish nested ObservableObject changes so SwiftUI views refresh.
         auth.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        newReleases.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+
+        // Switching destination playlists must not carry the per-playlist caches across, or the
+        // new playlist starts out empty and stays that way.
+        settings.$newReleasesPlaylistId.dropFirst()
+            .sink { [weak self] id in self?.newReleaseStore.setPlaylist(id) }
+            .store(in: &cancellables)
+
+        // Stamp the "nothing older than this" line when the radar is switched on, not when it
+        // first manages to run — those can be days apart if the user still has to log back in
+        // for the follow scopes or pick a destination, and everything released in between would
+        // land before the watermark and be skipped.
+        settings.$newReleasesEnabled.dropFirst()
+            .sink { [weak self] enabled in
+                guard enabled else { return }
+                self?.newReleaseStore.startWatermarkIfNeeded(now: Date())
+            }
+            .store(in: &cancellables)
 
         discovery = DiscoveryEngine(
             provider: provider,
@@ -164,6 +191,8 @@ final class AppModel: ObservableObject {
     /// False on a token minted before the library scopes were requested — a refresh can't widen
     /// scopes, so clearing Your Episodes needs a fresh login first.
     var hasLibraryScopes: Bool { auth.hasLibraryScopes }
+    /// Likewise for reading followed artists, which the release radar needs.
+    var hasFollowScopes: Bool { auth.hasFollowScopes }
     var isSpotifyRunning: Bool { provider.isAppRunning }
 
     // MARK: Lifecycle
@@ -193,6 +222,11 @@ final class AppModel: ObservableObject {
             activeDeviceIsLocal = nil
         }
         lastTickAt = now
+
+        // Daily release radar. Everything but an actually-due scan is a local date comparison,
+        // so this is safe to ask once a second; the scan itself runs detached and paces its own
+        // requests rather than blocking the tick.
+        newReleases.scanIfDue(now: now)
 
         let np = await provider.refreshNowPlaying()
 
@@ -436,6 +470,38 @@ final class AppModel: ObservableObject {
         settings.targetPlaylistName = playlist.name
         DebugLog.log("target set: \"\(playlist.name)\" id=\(playlist.id) owner=\(playlist.ownerId) collab=\(playlist.collaborative)")
         Task { await loadTargetMembership(force: true) }
+    }
+
+    // MARK: New releases
+
+    /// Point the release radar at an existing playlist.
+    func setNewReleasesTarget(_ playlist: Playlist) {
+        settings.newReleasesPlaylistId = playlist.id
+        settings.newReleasesPlaylistName = playlist.name
+        DebugLog.log("new-releases target set: \"\(playlist.name)\" id=\(playlist.id)")
+    }
+
+    /// Create the default "New From Followed" playlist and point the radar at it.
+    ///
+    /// Creating it here rather than asking the user to make one in Spotify means the app can
+    /// guarantee it owns and can write to the destination — the most common way the radar would
+    /// otherwise fail is being pointed at a playlist the user can't edit.
+    func createNewReleasesPlaylist() {
+        guard isAuthorized else { setStatus("Log in to Spotify first.", isError: true); return }
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                let playlist = try await api.createPlaylist(
+                    name: "New From Followed",
+                    description: "New music from artists you follow. Updated daily by Spotify Menu Bar.")
+                setNewReleasesTarget(playlist)
+                await loadPlaylists()
+                setStatus("Created “\(playlist.name)”")
+            } catch {
+                setStatus("Couldn't create the playlist: \(error.localizedDescription)", isError: true)
+            }
+        }
     }
 
     func addCurrentToTarget() {
