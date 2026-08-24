@@ -77,10 +77,10 @@ object CuratorNotification {
         // so the Discovery row is wired on the expanded view alone, which is the only one that
         // has it.
         val collapsed = RemoteViews(context.packageName, R.layout.notification_curator).apply {
-            wireActions(context, this, state)
+            wireActions(context, this, state, addedLabel = context.getString(R.string.glyph_added))
         }
         val expanded = RemoteViews(context.packageName, R.layout.notification_curator_big).apply {
-            wireActions(context, this, state)
+            wireActions(context, this, state, addedLabel = context.getString(R.string.action_added))
             wireDiscoveryToggle(context, this)
         }
 
@@ -130,7 +130,18 @@ object CuratorNotification {
         }
     }
 
-    private fun wireActions(context: Context, views: RemoteViews, state: CuratorState) {
+    /**
+     * @param addedLabel what the Add button reads once the song is in the target. The two layouts
+     *   carry different text for the same id — a glyph collapsed, a word expanded — and setting
+     *   text on an id a layout doesn't have throws at inflate time (see the note in [build]), so
+     *   the caller supplies the one that belongs to the view it is wiring.
+     */
+    private fun wireActions(
+        context: Context,
+        views: RemoteViews,
+        state: CuratorState,
+        addedLabel: String,
+    ) {
         views.setOnClickPendingIntent(R.id.action_add, actionIntent(context, ActionReceiver.ACTION_ADD))
         views.setOnClickPendingIntent(R.id.action_remove, actionIntent(context, ActionReceiver.ACTION_REMOVE))
         views.setOnClickPendingIntent(R.id.action_skip, actionIntent(context, ActionReceiver.ACTION_SKIP))
@@ -148,12 +159,34 @@ object CuratorNotification {
         }
         val canRemove = (held?.source ?: state.source).isEditablePlaylist
 
-        val addEnabled = canCurate && !state.isBusy
+        // The song is already where Add would put it: say so and take the press away. This is the
+        // only confirmation the lock screen gets — the status line is set as `contentText`, which
+        // DecoratedCustomViewStyle never draws (see [build]) — so before this, a successful Add
+        // looked identical to nothing happening.
+        val added = state.inTarget && canCurate && !state.isBusy
+        val addEnabled = canCurate && !state.isBusy && !added
         val removeEnabled = canCurate && !state.isBusy && canRemove
+
         views.setBoolean(R.id.action_add, "setEnabled", addEnabled)
         views.setBoolean(R.id.action_remove, "setEnabled", removeEnabled)
-        views.setFloat(R.id.action_add, "setAlpha", if (addEnabled) 1f else 0.4f)
+        // `added` keeps full alpha deliberately — see @drawable/notification_button_added. Its
+        // "not pressable" signal is the changed glyph and the changed fill, not a fade, because a
+        // faded green tick on a lock screen is a green tick you can't read.
+        views.setFloat(R.id.action_add, "setAlpha", if (addEnabled || added) 1f else 0.4f)
         views.setFloat(R.id.action_remove, "setAlpha", if (removeEnabled) 1f else 0.4f)
+
+        if (added) {
+            views.setTextViewText(R.id.action_add, addedLabel)
+            views.setTextColor(R.id.action_add, context.getColor(R.color.curator_added))
+            views.setInt(R.id.action_add, "setBackgroundResource", R.drawable.notification_button_added)
+            views.setCharSequence(
+                R.id.action_add,
+                "setContentDescription",
+                context.getString(R.string.action_added_description),
+            )
+        }
+        // No else branch: `build` inflates a fresh RemoteViews every time, so an un-added rebuild
+        // already carries the layout's own text, colour and background.
     }
 
     /**

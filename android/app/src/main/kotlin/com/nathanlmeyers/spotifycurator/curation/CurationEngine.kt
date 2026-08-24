@@ -32,7 +32,16 @@ import kotlinx.coroutines.sync.withLock
 data class CuratorState(
     val nowPlaying: NowPlaying? = null,
     val source: SourceContext = SourceContext.NONE,
-    /** True when the currently-playing track is already in the target playlist. */
+    /**
+     * The URI the last successful resolve was for. Not the same as `nowPlaying.uri`, which can be
+     * empty: Android's `MediaMetadata` is not obliged to carry a Spotify URI at all.
+     */
+    val resolvedUri: String? = null,
+    /**
+     * True when the track Add would act on is already in the target playlist — what puts the
+     * checkmark on the Add button and takes the press away. Only ever written by
+     * [CurationEngine.refreshInTarget], so there is one rule rather than a write per code path.
+     */
     val inTarget: Boolean = false,
     val status: String? = null,
     val isError: Boolean = false,
@@ -76,6 +85,15 @@ class CurationEngine private constructor(context: Context) {
     /** URIs known to be in the target playlist; the duplicate guard for Add. */
     @Volatile private var targetMembership: Set<String> = emptySet()
 
+    /**
+     * The target whose membership [targetMembership] describes.
+     *
+     * Declared here rather than beside [selectMembershipTarget] because `init` seeds it: Kotlin
+     * runs property initializers in declaration order, so a `= null` below `init` would wipe the
+     * seed straight back out.
+     */
+    private var membershipTargetId: String? = null
+
     val history = ReviewHistory.get(context)
 
     val discovery = DiscoveryEngine(
@@ -91,12 +109,22 @@ class CurationEngine private constructor(context: Context) {
         scope.launch {
             discovery.state.collect { review ->
                 _state.update { it.copy(review = review) }
+                // A hold changes *which* URI Add would act on, so the checkmark has to follow it.
+                refreshInTarget()
             }
         }
         // Seed the duplicate guard from disk so Add says "Already in <target>" on the very first
         // press after a cold start, before the playlist fetch has come back.
+        //
+        // `membershipTargetId` has to be set alongside the set, not just the set: it is what says
+        // *which* playlist these URIs belong to, and CurationLogic refuses to draw the checkmark
+        // while that is unknown. Seeding one without the other would leave the button blank until
+        // the network load landed — exactly the gap this seed exists to close.
         settings.targetPlaylistId?.let { target ->
-            history.cachedMembership(target)?.let { targetMembership = it }
+            history.cachedMembership(target)?.let {
+                targetMembership = it
+                membershipTargetId = target
+            }
         }
     }
 
@@ -125,7 +153,9 @@ class CurationEngine private constructor(context: Context) {
             lastContextUri = contextUri
             // Clear the stale source immediately: rendering "Remove from <previous playlist>"
             // for the new track is exactly the confusion that leads to a wrong deletion.
-            _state.update { it.copy(source = SourceContext.NONE, inTarget = false, status = null) }
+            _state.update {
+                it.copy(source = SourceContext.NONE, resolvedUri = null, inTarget = false, status = null)
+            }
             // Cancel any in-flight resolve for the previous track: its answer is worthless now,
             // and letting it run just burns an API call against the rate limit.
             sourceJob?.cancel()
@@ -221,12 +251,8 @@ class CurationEngine private constructor(context: Context) {
             )
             return
         }
-        _state.update {
-            it.copy(
-                source = resolved.source,
-                inTarget = resolved.trackUri != null && targetMembership.contains(resolved.trackUri),
-            )
-        }
+        _state.update { it.copy(source = resolved.source, resolvedUri = resolved.trackUri) }
+        refreshInTarget()
     }
 
     private data class Resolved(val source: SourceContext, val trackUri: String?)
@@ -339,8 +365,32 @@ class CurationEngine private constructor(context: Context) {
             .map { }
     }
 
-    /** The target whose membership [targetMembership] describes. */
-    private var membershipTargetId: String? = null
+    /**
+     * The URI Add would act on: the frozen held snapshot when discovery has parked a track,
+     * otherwise the resolved playing track. The buttons act on the held snapshot during a hold,
+     * so the checkmark has to describe the same thing they do.
+     */
+    private fun actionUri(s: CuratorState): String? =
+        (s.review as? ReviewState.Held)?.track?.uri ?: s.resolvedUri
+
+    /**
+     * Recompute [CuratorState.inTarget] from the current inputs.
+     *
+     * The one writer, deliberately. Every previous `copy(inTarget = ...)` was a separate claim
+     * about a different moment, and they drifted: the one in `performAdd` fired *after*
+     * `finishHold`/`skipToNextAfterAdd` had already advanced playback, so a successful Add could
+     * mark the **next** song as added.
+     */
+    private fun refreshInTarget() = _state.update {
+        it.copy(
+            inTarget = CurationLogic.showsInTarget(
+                trackUri = actionUri(it),
+                membershipTargetId = membershipTargetId,
+                currentTargetId = settings.targetPlaylistId,
+                membership = targetMembership,
+            ),
+        )
+    }
 
     /** Switch the in-memory view to [target] while [membershipLock] is held. */
     private fun selectMembershipTarget(target: String) {
@@ -382,6 +432,9 @@ class CurationEngine private constructor(context: Context) {
             DebugLog.log("target membership: ${loaded.size} tracks")
             true
         }
+        // Unconditional: selectMembershipTarget has already swapped the in-memory set by now, so
+        // even a *failed* fetch has changed what the checkmark should say.
+        refreshInTarget()
         // Source refresh can perform unrelated playlist/user lookups; don't block Add behind it.
         if (didLoad) refreshSource()
     }
@@ -393,7 +446,7 @@ class CurationEngine private constructor(context: Context) {
         _playlists.value = emptyList()
         targetMembership = emptySet()
         membershipTargetId = null
-        _state.update { CuratorState(nowPlaying = it.nowPlaying) }
+        _state.update { CuratorState(nowPlaying = it.nowPlaying) }   // inTarget/resolvedUri reset with it
     }
 
     // MARK: - Action target
@@ -418,7 +471,8 @@ class CurationEngine private constructor(context: Context) {
         resolveFromLocalMetadata()?.let { resolved ->
             val uri = resolved.trackUri
             if (uri != null && NowPlaying.classify(uri).isCuratable) {
-                _state.update { it.copy(source = resolved.source) }
+                _state.update { it.copy(source = resolved.source, resolvedUri = uri) }
+                refreshInTarget()
                 return Result.success(ActionTarget(uri, resolved.source))
             }
             if (uri != null) {
@@ -452,7 +506,8 @@ class CurationEngine private constructor(context: Context) {
             SourceContext.NONE
         }
 
-        _state.update { it.copy(source = source) }
+        _state.update { it.copy(source = source, resolvedUri = uri) }
+        refreshInTarget()
         return Result.success(ActionTarget(uri, source))
     }
 
@@ -599,7 +654,7 @@ class CurationEngine private constructor(context: Context) {
             return false
         }
         val targetName = settings.targetPlaylistName ?: "target"
-        return try {
+        try {
             membershipLock.withLock {
                 // A target selection and this coroutine can race. Never consult the previous
                 // target's set while the new target's full load is still waiting to start.
@@ -610,43 +665,55 @@ class CurationEngine private constructor(context: Context) {
                     api.addTrack(uri, target)
                     targetMembership = targetMembership + uri
                     history.addToMembership(target, uri)
-                    _state.update { it.copy(inTarget = true) }
                     setStatus("Added to $targetName")
                 }
             }
-            // Move semantics: also remove from source when enabled & editable — but never delete
-            // from the target itself, and only when the source was resolved for THIS track (a
-            // stale source must not delete the wrong track from the wrong playlist).
-            val src = sourceCtx.playlistId
-            if (settings.removeFromSourceOnAdd && sourceCtx.isEditablePlaylist && src != null &&
-                DiscoveryLogic.mayRemoveFromSource(
-                    sourcePlaylistId = src,
-                    targetPlaylistId = settings.targetPlaylistId,
-                    sourceTrackUri = sourceCtx.trackUri,
-                    actedUri = uri,
-                    isMove = true,
-                )
-            ) {
-                val sourceName = sourceCtx.playlistName ?: "the source"
-                // A move whose source holds several copies would delete all of them. Unlike the
-                // Remove button there is nowhere to prompt — an add is normally followed straight
-                // away by a skip, and a confirmation left armed would be answered against the next
-                // track or silently expire. So the add stands, the delete doesn't, and the user is
-                // told; pressing Remove afterwards offers the confirmation properly.
-                val copies = if (settings.warnOnDuplicateRemoval) occurrenceCount(uri, src) else null
-                if (copies != null && copies > 1) {
-                    DebugLog.log("move: refusing to auto-delete $copies copies of $uri from playlist $src")
-                    setStatus("Added to $targetName — left $copies copies in $sourceName. Press Remove to delete them all.")
-                    return true
-                }
-                api.removeTrack(uri, src, UserRemovalIntent.addButtonMove())
-                setStatus("Moved to $targetName")
-            }
-            true
         } catch (e: Exception) {
             setStatus("Add failed: ${e.message}", isError = true)
-            false
+            return false
+        } finally {
+            // Covers both branches, and runs even on the failure path so a partially-applied
+            // membership edit can't leave the checkmark asserting something untrue.
+            refreshInTarget()
         }
+        // Move semantics: also remove from source when enabled & editable — but never delete
+        // from the target itself, and only when the source was resolved for THIS track (a
+        // stale source must not delete the wrong track from the wrong playlist).
+        //
+        // Its own try/catch: the add above has already landed and the Add button is already
+        // wearing its checkmark, so reporting a failure here as "Add failed" would contradict
+        // what the user is looking at. Only the half that failed gets named.
+        val src = sourceCtx.playlistId
+        if (settings.removeFromSourceOnAdd && sourceCtx.isEditablePlaylist && src != null &&
+            DiscoveryLogic.mayRemoveFromSource(
+                sourcePlaylistId = src,
+                targetPlaylistId = settings.targetPlaylistId,
+                sourceTrackUri = sourceCtx.trackUri,
+                actedUri = uri,
+                isMove = true,
+            )
+        ) {
+            val sourceName = sourceCtx.playlistName ?: "the source"
+            // A move whose source holds several copies would delete all of them. Unlike the
+            // Remove button there is nowhere to prompt — an add is normally followed straight
+            // away by a skip, and a confirmation left armed would be answered against the next
+            // track or silently expire. So the add stands, the delete doesn't, and the user is
+            // told; pressing Remove afterwards offers the confirmation properly.
+            val copies = if (settings.warnOnDuplicateRemoval) occurrenceCount(uri, src) else null
+            if (copies != null && copies > 1) {
+                DebugLog.log("move: refusing to auto-delete $copies copies of $uri from playlist $src")
+                setStatus("Added to $targetName — left $copies copies in $sourceName. Press Remove to delete them all.")
+                return true
+            }
+            try {
+                api.removeTrack(uri, src, UserRemovalIntent.addButtonMove())
+                setStatus("Moved to $targetName")
+            } catch (e: Exception) {
+                setStatus("Added to $targetName, but couldn't remove from source: ${e.message}",
+                    isError = true)
+            }
+        }
+        return true
     }
 
     /**
@@ -779,8 +846,8 @@ class CurationEngine private constructor(context: Context) {
                     api.removeTrack(uri, src, intent)
                     targetMembership = targetMembership - uri
                     history.removeFromMembership(src, uri)
-                    _state.update { it.copy(inTarget = false) }
                 }
+                refreshInTarget()
             } else {
                 api.removeTrack(uri, src, intent)
             }

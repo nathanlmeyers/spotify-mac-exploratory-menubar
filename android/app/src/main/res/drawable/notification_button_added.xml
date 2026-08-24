@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Add button once the song is already in the target playlist.
+
+  Same shape as @drawable/notification_button, green instead of grey, and the same reason for a
+  translucent literal rather than a theme attribute: at low alpha it darkens a light notification
+  background and lightens a dark one, so it shows up in both without resolving anything.
+
+  A changed fill rather than the 0.4 alpha this app uses for greyed-out buttons. Fading a coloured
+  glyph toward the background is what destroys it — #1B7F3B at 40% over white is a pale wash you
+  cannot read at arm's length, which on a lock screen is the whole use case. So "done" is drawn as
+  *different*, not dimmer; 0.4 alpha stays reserved for "you can't do this".
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="22dp" />
+    <solid android:color="#261DB954" />
+    <stroke
+        android:width="1dp"
+        android:color="#801DB954" />
+</shape>

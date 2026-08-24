@@ -238,8 +238,9 @@ struct NowPlayingView: View {
                 model.removeCurrentFromSource()
             }
             curationButton("Add", icon: "plus.circle.fill", tint: .green,
+                           done: model.currentIsInTarget,
                            disabled: !model.canAdd,
-                           help: model.addDisabledReason ?? "Add to \(model.settings.targetPlaylistName ?? "target")") {
+                           help: addHelp(isInTarget: model.currentIsInTarget)) {
                 model.addCurrentToTarget()
             }
         }
@@ -288,8 +289,10 @@ struct NowPlayingView: View {
                 model.heldRemove()
             }
             curationButton("Add", icon: "plus.circle.fill", tint: .green,
+                           done: model.isInTarget(held.snapshot),
                            disabled: !held.canAdd,
-                           help: held.canAdd ? "Add to \(held.targetName ?? "target")" : (model.addDisabledReason ?? "Can't add")) {
+                           help: addHelp(isInTarget: model.isInTarget(held.snapshot),
+                                         canAdd: held.canAdd, targetName: held.targetName)) {
                 model.heldAdd()
             }
             curationButton("Next", icon: "forward.fill", tint: .secondary,
@@ -301,14 +304,45 @@ struct NowPlayingView: View {
         .controlSize(.large)
     }
 
+    /// Tooltip for the Add button. macOS suppresses `.help` on a disabled control, so the
+    /// "already there" string is a fallback for accessibility readers rather than the main
+    /// signal — that is the "Added" label itself.
+    private func addHelp(isInTarget: Bool, canAdd: Bool = true, targetName: String? = nil) -> String {
+        let target = targetName ?? model.settings.targetPlaylistName ?? "target"
+        if isInTarget { return "Already in \(target)" }
+        if !canAdd { return model.addDisabledReason ?? "Can't add" }
+        return model.addDisabledReason ?? "Add to \(target)"
+    }
+
+    /// `done` is the Add button's "already in the target" face: a green checkmark, disabled.
+    ///
+    /// Still a `Button` rather than a plain `Label` (the way SuggestedArtistsView swaps out
+    /// Follow) because this row is equal-width buttons and a Label would collapse it. But it
+    /// drops to `.bordered`: a *disabled* `.borderedProminent` fades its fill and keeps the
+    /// label white, which in light mode is white-on-pale-green and barely legible. Letting the
+    /// fill go and colouring the label green instead reads clearly in both appearances, and the
+    /// missing fill is itself the "this is no longer the action here" signal.
+    @ViewBuilder
     private func curationButton(_ title: String, icon: String, tint: Color,
+                                done: Bool = false,
                                 disabled: Bool = false, help: String,
                                 action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon).frame(maxWidth: .infinity)
+        Group {
+            if done {
+                Button(action: action) {
+                    Label("Added", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button(action: action) {
+                    Label(title, systemImage: icon).frame(maxWidth: .infinity)
+                }
+                .tint(tint)
+            }
         }
-        .tint(tint)
-        .disabled(disabled)
+        .disabled(done || disabled)
         .help(help)
     }
 
