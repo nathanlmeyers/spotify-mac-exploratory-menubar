@@ -2,10 +2,15 @@
 <!--
   Expanded content view: the same three actions with their full labels, plus the Discovery switch.
 
-  No track title, artist or status line. Spotify's own media notification sits right above this
-  one showing the song, so repeating it here said nothing new — and the standard action buttons
-  that used to be attached alongside these (NotificationCompat.addAction) said it twice over. What
-  expanding buys you is the labels and the Discovery row, nothing else.
+  No track title or artist. Spotify's own media notification sits right above this one showing the
+  song, so repeating it here said nothing new — and the standard action buttons that used to be
+  attached alongside these (NotificationCompat.addAction) said it twice over. What expanding buys
+  you is the labels and the Discovery row, nothing else.
+
+  @id/status_line is the one exception, and it stays gone unless something is actually wrong — see
+  CuratorNotification.statusLine. It must exist in both content views even though only one may show
+  it: setting text on an id a layout lacks throws when the system inflates it, which surfaces as a
+  notification that silently never appears.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -50,4 +55,9 @@
         android:id="@+id/action_discovery"
         style="@style/CuratorNotificationButton"
         android:layout_width="match_parent" />
+
+    <TextView
+        android:id="@+id/status_line"
+        style="@style/CuratorNotificationStatus"
+        android:visibility="gone" />
 </LinearLayout>

@@ -45,6 +45,16 @@ data class CuratorState(
     val inTarget: Boolean = false,
     val status: String? = null,
     val isError: Boolean = false,
+    /**
+     * Mirrors [com.nathanlmeyers.spotifycurator.auth.AuthState.sessionExpired] so the notification
+     * can say why its buttons went dead.
+     *
+     * A dead grant blanks [source] — a failed resolve can't tell whether the playlist is editable —
+     * and an un-editable source is what disables Remove. Without this the lock screen shows a
+     * greyed-out button and no reason for it, which is indistinguishable from "this playlist isn't
+     * yours" and sends you hunting through settings that can't help.
+     */
+    val authBroken: Boolean = false,
     val isBusy: Boolean = false,
     /** Discovery mode's review state; [ReviewState.Held] is what turns the row into a verdict. */
     val review: ReviewState = ReviewState.Inactive,
@@ -100,6 +110,11 @@ class CurationEngine private constructor(context: Context) {
 
     init {
         watcher.onChanged = { onMediaChanged() }
+        scope.launch {
+            auth.state.collect { a ->
+                _state.update { it.copy(authBroken = a.sessionExpired || !a.hasClientId) }
+            }
+        }
         scope.launch {
             discovery.state.collect { review ->
                 _state.update { it.copy(review = review) }

@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import com.nathanlmeyers.spotifycurator.R
@@ -109,6 +110,27 @@ object CuratorNotification {
     }
 
     /**
+     * Why the buttons look the way they do — or null to stay out of the way, which is the usual
+     * answer.
+     *
+     * Deliberately silent in the ordinary case: Spotify's own media notification sits directly
+     * above this one, so a running commentary here would only steal room from the buttons. It
+     * speaks up when a button is disabled for a reason you cannot see, because that is the state
+     * that reads as "the app is broken" and sends you into settings that cannot fix it. A dead
+     * Spotify grant is the sharpest example — it blanks the source, which disables Remove, and
+     * every setting in the app is irrelevant to it.
+     */
+    private fun statusLine(state: CuratorState, canRemove: Boolean): String? {
+        val sourceName = state.source.playlistName
+        return when {
+            state.authBroken -> "Spotify login expired — open the app to log in again"
+            state.isError -> state.status
+            !canRemove && sourceName != null -> "Can't remove from $sourceName — you can't edit it"
+            else -> null
+        }
+    }
+
+    /**
      * A one-line summary of what Remove would act on.
      *
      * Shown whenever there's no fresher status. Naming the playlist is a safety feature, not a
@@ -166,6 +188,16 @@ object CuratorNotification {
         val added = state.inTarget && canCurate && !state.isBusy
         val addEnabled = canCurate && !state.isBusy && !added
         val removeEnabled = canCurate && !state.isBusy && canRemove
+
+        // Explain a dead button, when there is anything to explain. Both content views carry
+        // @id/status_line so this runs identically for either.
+        when (val line = statusLine(state, canRemove)) {
+            null -> views.setViewVisibility(R.id.status_line, View.GONE)
+            else -> {
+                views.setTextViewText(R.id.status_line, line)
+                views.setViewVisibility(R.id.status_line, View.VISIBLE)
+            }
+        }
 
         views.setBoolean(R.id.action_add, "setEnabled", addEnabled)
         views.setBoolean(R.id.action_remove, "setEnabled", removeEnabled)
