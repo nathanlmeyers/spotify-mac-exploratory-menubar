@@ -395,12 +395,6 @@ private fun CuratorScreen() {
                             state.source.playlistName?.let { "From $it" } ?: "Not playing from a playlist",
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        if (state.inTarget) {
-                            Text(
-                                "Already in ${pref { targetPlaylistName } ?: "target"}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
                     }
                     state.status?.let {
                         Text(
@@ -411,7 +405,15 @@ private fun CuratorScreen() {
                         )
                     }
                     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { engine.onAddPressed() }, enabled = !state.isBusy) { Text("Add") }
+                        // Mirrors the notification: once the song is in the target the button
+                        // says so and stops taking presses. `isCuratable` matches what
+                        // CuratorNotification.wireActions gates on — an empty URI is "not
+                        // resolved yet", not "not a song".
+                        val canCurate = np?.let { it.uri.isEmpty() || it.kind.isCuratable } ?: false
+                        Button(
+                            onClick = { engine.onAddPressed() },
+                            enabled = !state.isBusy && canCurate && !state.inTarget,
+                        ) { Text(if (state.inTarget) "✓ Added" else "Add") }
                         Button(
                             onClick = { engine.onRemovePressed() },
                             enabled = !state.isBusy && state.source.isEditablePlaylist,

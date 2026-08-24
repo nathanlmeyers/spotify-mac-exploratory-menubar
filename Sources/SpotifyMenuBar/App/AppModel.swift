@@ -98,7 +98,14 @@ final class AppModel: ObservableObject {
     private var sourceResolveTries = 0
     private let maxSourceResolveTries = 5
     private var sourceRefreshInFlight = false
-    private var targetMembership: Set<String> = []
+    /// URIs known to be in the target playlist: the duplicate guard for Add, and what puts the
+    /// checkmark on the Add button. Published so the panel re-renders the moment it changes.
+    /// Never `sink` on this — see the willSet note in `AppDelegate`.
+    @Published private(set) var targetMembership: Set<String> = []
+    /// Which playlist `targetMembership` describes. Tracked because it can lag
+    /// `settings.targetPlaylistId`: a target switch whose fetch fails would otherwise leave the
+    /// previous playlist's contents standing behind a disabled Add button.
+    private var membershipTargetId: String?
     private var statusClear: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -388,19 +395,47 @@ final class AppModel: ObservableObject {
     }
 
     private func loadTargetMembership(force: Bool) async {
-        guard let target = settings.targetPlaylistId else { targetMembership = []; return }
-        if !force, let cached = history.cachedMembership(targetId: target) {
-            targetMembership = cached
+        guard let target = settings.targetPlaylistId else {
+            targetMembership = []
+            membershipTargetId = nil
+            return
+        }
+        // Seed from disk *before* the fetch, for both directions of wrongness. It drops the
+        // previous target's contents the instant the target changes, rather than letting them
+        // stand until (or past) a fetch that may fail — and it means a cold start answers
+        // "already in <target>" from the last known contents instead of from an empty set, which
+        // would show every song as unadded and let the first Add write a duplicate.
+        if membershipTargetId != target {
+            targetMembership = history.cachedMembership(targetId: target) ?? []
+            membershipTargetId = target
+        } else if !force, !targetMembership.isEmpty {
             return
         }
         do {
             let uris = try await api.playlistTrackURIs(id: target)
+            // The target can change while this is in flight; publishing then would attribute one
+            // playlist's contents to another.
+            guard settings.targetPlaylistId == target else { return }
             targetMembership = uris
+            membershipTargetId = target
             history.setMembership(targetId: target, uris: uris)
         } catch {
-            if let cached = history.cachedMembership(targetId: target) { targetMembership = cached }
+            // Keep the seed. An unknown answer must read as "not added" — never as added, which
+            // with a disabled Add button would leave no way to add the song at all.
         }
     }
+
+    /// Whether the Add button should wear its "already in the target" face for this track.
+    func isInTarget(_ np: NowPlaying?) -> Bool {
+        CurationLogic.showsInTarget(trackURI: np?.uri,
+                                    membershipTargetId: membershipTargetId,
+                                    currentTargetId: settings.targetPlaylistId,
+                                    membership: targetMembership)
+    }
+
+    /// The same, for whatever the panel is currently showing — `displayTrack`, not `nowPlaying`,
+    /// so a hold's frozen snapshot wins over a transient read of its successor.
+    var currentIsInTarget: Bool { isInTarget(displayTrack) }
 
     // MARK: Capabilities (drive enabled/disabled UI + tooltips)
 
@@ -512,6 +547,7 @@ final class AppModel: ObservableObject {
         editablePlaylists = []
         source = .none
         targetMembership = []
+        membershipTargetId = nil
         lastSourceId = nil
         discovery.reset()
         clearEpisodes = .idle    // never leave another account's episode count on screen
@@ -616,6 +652,13 @@ final class AppModel: ObservableObject {
         let targetName = settings.targetPlaylistName ?? "target"
         isBusy = true
         defer { isBusy = false }
+        // A target switch and this press can race. Never consult (or extend) the previous
+        // target's set — that is how a song reads as "already in" a playlist it was never added
+        // to. Mirrors Android's `selectMembershipTarget`.
+        if membershipTargetId != target {
+            targetMembership = history.cachedMembership(targetId: target) ?? []
+            membershipTargetId = target
+        }
         do {
             if targetMembership.contains(uri) {
                 setStatus("Already in \(targetName)")
@@ -625,22 +668,31 @@ final class AppModel: ObservableObject {
                 history.addToMembership(targetId: target, uri: uri)
                 setStatus("Added to \(targetName)")
             }
-            // Move semantics: also remove from source when enabled & editable — but never
-            // delete from the target itself, and only when the source was resolved for THIS
-            // track (a stale source must not delete the wrong track from the wrong playlist).
-            if settings.removeFromSourceOnAdd, sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId,
-               DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
-                                                  targetPlaylistId: settings.targetPlaylistId,
-                                                  sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: true) {
-                try await provider.removeTrack(uri: uri, fromPlaylist: src,
-                                               intent: UserRemovalIntent("Add button (move)"))
-                setStatus("Moved to \(targetName)")
-            }
-            return true
         } catch {
             setStatus("Add failed: \(error.localizedDescription)", isError: true)
             return false
         }
+        // Move semantics: also remove from source when enabled & editable — but never
+        // delete from the target itself, and only when the source was resolved for THIS
+        // track (a stale source must not delete the wrong track from the wrong playlist).
+        //
+        // Its own do/catch: the add above has already landed and the Add button is already
+        // wearing its checkmark, so reporting a failure here as "Add failed" would contradict
+        // what the user is looking at. Only the half that failed gets named.
+        if settings.removeFromSourceOnAdd, sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId,
+           DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
+                                              targetPlaylistId: settings.targetPlaylistId,
+                                              sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: true) {
+            do {
+                try await provider.removeTrack(uri: uri, fromPlaylist: src,
+                                               intent: UserRemovalIntent("Add button (move)"))
+                setStatus("Moved to \(targetName)")
+            } catch {
+                setStatus("Added to \(targetName), but couldn't remove from source: " +
+                          error.localizedDescription, isError: true)
+            }
+        }
+        return true
     }
 
     /// Returns true when the track was removed from the source playlist.
@@ -667,8 +719,11 @@ final class AppModel: ObservableObject {
             // track — otherwise it still reads as "already in target" and auto-skip keeps
             // skipping a song that is no longer there.
             if src == settings.targetPlaylistId {
-                targetMembership.remove(uri)
+                // Disk always; memory only when the in-memory set is actually this playlist's.
+                // Mutating a set loaded for a different target would edit the wrong playlist's
+                // view of itself.
                 history.removeFromMembership(targetId: src, uri: uri)
+                if membershipTargetId == src { targetMembership.remove(uri) }
             }
             setStatus("Removed from \(name)")
             return true
