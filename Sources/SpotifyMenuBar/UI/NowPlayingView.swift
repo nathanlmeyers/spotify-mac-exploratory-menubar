@@ -219,7 +219,18 @@ struct NowPlayingView: View {
         .font(.body)
     }
 
-    private var curationNormal: some View {
+    /// The curation row — or, while a multi-row removal is waiting on an answer, the
+    /// confirmation that replaces it. Swapping rather than stacking is deliberate: the decision
+    /// is modal, and leaving Add/Remove live underneath invites answering it by accident.
+    @ViewBuilder private var curationNormal: some View {
+        if let pending = model.pendingDuplicateRemoval {
+            duplicateConfirm(pending)
+        } else {
+            curationNormalButtons
+        }
+    }
+
+    private var curationNormalButtons: some View {
         HStack(spacing: 10) {
             curationButton("Remove", icon: "minus.circle.fill", tint: .red,
                            disabled: !model.canRemoveFromSource,
@@ -237,7 +248,39 @@ struct NowPlayingView: View {
         .controlSize(.large)
     }
 
-    private func curationHeld(_ held: HeldTrack) -> some View {
+    @ViewBuilder private func curationHeld(_ held: HeldTrack) -> some View {
+        if let pending = model.pendingDuplicateRemoval {
+            duplicateConfirm(pending)
+        } else {
+            curationHeldButtons(held)
+        }
+    }
+
+    /// "This song is in the playlist four times — remove all four?"
+    ///
+    /// The count is the whole point. Spotify's delete-by-URI takes every copy and there is no
+    /// undo, so this is the last place the number can be seen before the rows are gone.
+    private func duplicateConfirm(_ pending: PendingDuplicateRemoval) -> some View {
+        let subject = pending.trackName.map { "“\($0)”" } ?? "This track"
+        return VStack(alignment: .leading, spacing: 8) {
+            Label("\(subject) is in \(pending.playlistName) \(pending.count) times",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text("Spotify can only remove every copy at once. This can't be undone.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { model.cancelDuplicateRemoval() }
+                Button("Remove all \(pending.count)", role: .destructive) {
+                    model.confirmDuplicateRemoval()
+                }
+                .disabled(model.isBusy)
+            }
+        }
+    }
+
+    private func curationHeldButtons(_ held: HeldTrack) -> some View {
         let canRemove = model.canRemoveHeld(held)
         return HStack(spacing: 8) {
             curationButton("Remove", icon: "minus.circle.fill", tint: .red,

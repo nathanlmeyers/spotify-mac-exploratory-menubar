@@ -41,6 +41,15 @@ class Settings private constructor(context: Context) {
         get() = prefs.getBoolean(K.SKIP_AFTER_ADD, false)
         set(v) = put { putBoolean(K.SKIP_AFTER_ADD, v) }
 
+    /**
+     * Ask before a Remove that would take more than one row. Spotify deletes by URI with no
+     * positions, so a track sitting in a playlist twice loses both copies to one press; the check
+     * costs a full playlist read, which is why it can be switched off.
+     */
+    var warnOnDuplicateRemoval: Boolean
+        get() = prefs.getBoolean(K.WARN_DUPLICATE_REMOVAL, true)
+        set(v) = put { putBoolean(K.WARN_DUPLICATE_REMOVAL, v) }
+
     // MARK: Curator service
 
     /**
@@ -94,6 +103,7 @@ class Settings private constructor(context: Context) {
         const val MOVE_ON_ADD = "removeFromSourceOnAdd"
         const val SKIP_AFTER_REMOVE = "skipToNextAfterRemove"
         const val SKIP_AFTER_ADD = "skipToNextAfterAdd"
+        const val WARN_DUPLICATE_REMOVAL = "warnOnDuplicateRemoval"
         const val CURATOR_ENABLED = "curatorEnabled"
         const val DISCOVERY = "discoveryEnabled"
         const val ALERT_SOUND = "alertSound"

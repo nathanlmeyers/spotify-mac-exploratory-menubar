@@ -113,4 +113,59 @@ final class LibraryLogicTests: XCTestCase {
         XCTAssertEqual(LibraryLogic.partialFailureLabel(done: 150, total: 340, error: "boom"),
                        "Stopped after removing 150 of 340: boom")
     }
+
+    // MARK: - removableURIs
+    //
+    // The confirm button names a number. These are the cases where the library underneath it has
+    // moved on between the count and the press — the clear must never exceed what that number
+    // covered.
+
+    func testUnchangedLibraryRemovesEverythingApproved() {
+        let list = ids(5)
+        XCTAssertEqual(LibraryLogic.removableURIs(confirmed: list, current: list), list)
+    }
+
+    /// The case this exists for: two episodes saved while the confirm sat on screen. "Remove 3"
+    /// must remove 3, not 5.
+    func testEpisodesSavedAfterTheCountAreLeftAlone() {
+        let confirmed = ["ep0", "ep1", "ep2"]
+        let current = ["ep0", "ep1", "ep2", "new1", "new2"]
+        XCTAssertEqual(LibraryLogic.removableURIs(confirmed: confirmed, current: current), confirmed)
+    }
+
+    /// Unsaved elsewhere in the meantime: gone is gone, and asking Spotify to unsave it again
+    /// would just waste a slot in the batch.
+    func testEpisodesUnsavedAfterTheCountDropOut() {
+        XCTAssertEqual(LibraryLogic.removableURIs(confirmed: ids(4), current: ["ep0", "ep3"]),
+                       ["ep0", "ep3"])
+    }
+
+    /// Both at once — the general shape of a library that kept living between the two presses.
+    func testAdditionsAndRemovalsTogether() {
+        XCTAssertEqual(LibraryLogic.removableURIs(confirmed: ["a", "b", "c"],
+                                                  current: ["b", "new", "c", "other"]),
+                       ["b", "c"])
+    }
+
+    /// Order follows the fresh read, so a clear that dies partway has taken the oldest saves.
+    func testOrderFollowsTheCurrentLibraryNotTheApprovedList() {
+        XCTAssertEqual(LibraryLogic.removableURIs(confirmed: ["c", "b", "a"],
+                                                  current: ["a", "b", "c"]),
+                       ["a", "b", "c"])
+    }
+
+    func testNothingInCommonRemovesNothing() {
+        XCTAssertTrue(LibraryLogic.removableURIs(confirmed: ["a"], current: ["b"]).isEmpty)
+        XCTAssertTrue(LibraryLogic.removableURIs(confirmed: [], current: ids(3)).isEmpty)
+        XCTAssertTrue(LibraryLogic.removableURIs(confirmed: ids(3), current: []).isEmpty)
+    }
+
+    /// The result is what gets batched, so the two have to compose without dropping anything.
+    func testResultBatchesCleanly() {
+        let confirmed = ids(100)
+        let current = ids(120)   // 20 saved since
+        let removable = LibraryLogic.removableURIs(confirmed: confirmed, current: current)
+        XCTAssertEqual(removable.count, 100)
+        XCTAssertEqual(LibraryLogic.batches(removable).flatMap { $0 }, confirmed)
+    }
 }

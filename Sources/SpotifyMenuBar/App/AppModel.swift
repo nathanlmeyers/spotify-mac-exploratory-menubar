@@ -15,6 +15,21 @@ struct UserRemovalIntent {
     fileprivate init(_ gesture: String) { self.gesture = gesture }
 }
 
+/// A Remove that is waiting on a second, explicit confirmation because the track sits in the
+/// source playlist more than once.
+///
+/// Spotify's delete takes a URI and no positions, so one press takes every copy — the local
+/// bridge never learns the playing row's index, so there is no narrower call to make. The count
+/// can't be prevented, only shown: this makes it part of the decision instead of something the
+/// user discovers afterwards in a playlist that is short by four songs.
+struct PendingDuplicateRemoval: Equatable {
+    /// The track's name, when it's known — nil falls back to "This track" in the prompt.
+    let trackName: String?
+    let playlistName: String
+    /// Rows that this removal will take. Always > 1; a single-row removal never prompts.
+    let count: Int
+}
+
 /// Where the "Clear Your Episodes" flow is, so Settings can render it without owning any logic.
 ///
 /// `.confirming` exists to make the count part of the decision: Spotify's saved-episode library
@@ -54,6 +69,9 @@ final class AppModel: ObservableObject {
     @Published var isBusy = false
     @Published var reviewState: ReviewState = .inactive
     @Published private(set) var clearEpisodes: ClearEpisodesState = .idle
+    /// Set when a Remove press turned out to be a multi-row deletion; the panel swaps the
+    /// curation buttons for a confirmation while this is non-nil.
+    @Published private(set) var pendingDuplicateRemoval: PendingDuplicateRemoval?
     @Published var displayArtists: [String] = []   // full artist list from the Web API (incl. features)
     /// False while Spotify is running but not answering Apple events. Published so the panel can
     /// say so, rather than silently showing a frozen track as if it were live.
@@ -106,6 +124,16 @@ final class AppModel: ObservableObject {
     /// `settings.targetPlaylistId`: a target switch whose fetch fails would otherwise leave the
     /// previous playlist's contents standing behind a disabled Add button.
     private var membershipTargetId: String?
+    /// What the confirmed press will delete, frozen at the moment the count came back. Held
+    /// separately from the published prompt so the view never sees a URI, and so the deletion
+    /// targets exactly the track that was counted rather than whatever is playing by the time
+    /// the button is pressed. No `UserRemovalIntent` is stored: the confirming press is itself a
+    /// button, and mints its own — an intent is proof of a gesture, so keeping one on ice would
+    /// be exactly the stale authorization the type exists to prevent.
+    private var pendingRemovalWork: (uri: String, playlistId: String, playlistName: String)?
+    /// The episode URIs behind the number on the "Remove N episodes" button. Held from the
+    /// counting pass to the confirmed press so the clear can't exceed what was approved.
+    private var approvedEpisodeURIs: [String] = []
     private var statusClear: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -683,6 +711,18 @@ final class AppModel: ObservableObject {
            DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
                                               targetPlaylistId: settings.targetPlaylistId,
                                               sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: true) {
+            let sourceName = sourceCtx.playlistName ?? "the source"
+            // A move whose source holds several copies would delete all of them. Unlike the
+            // Remove button there's nowhere to prompt — an add is normally followed straight
+            // away by a skip, and a confirmation left on screen would be answered against the
+            // next track or silently dropped. So the add stands, the delete doesn't, and the
+            // user is told; pressing Remove afterwards offers the confirmation properly.
+            if settings.warnOnDuplicateRemoval,
+               let count = await occurrenceCount(of: uri, inPlaylist: src), count > 1 {
+                DebugLog.log("move: refusing to auto-delete \(count) copies of \(uri) from playlist \(src)")
+                setStatus("Added to \(targetName) — left \(count) copies in \(sourceName). Press Remove to delete them all.")
+                return true
+            }
             do {
                 try await provider.removeTrack(uri: uri, fromPlaylist: src,
                                                intent: UserRemovalIntent("Add button (move)"))
@@ -697,6 +737,10 @@ final class AppModel: ObservableObject {
 
     /// Returns true when the track was removed from the source playlist.
     /// `intent` is the user gesture that authorized this — see `UserRemovalIntent`.
+    ///
+    /// A press that would take more than one row doesn't delete: it arms
+    /// `pendingDuplicateRemoval` and returns false, and the second press (`confirmDuplicateRemoval`)
+    /// is what reaches `commitRemove`.
     @discardableResult
     private func performRemoveFromSource(uri: String, sourceCtx: SourceContext,
                                          intent: UserRemovalIntent) async -> Bool {
@@ -710,22 +754,85 @@ final class AppModel: ObservableObject {
             setStatus("Couldn't confirm this track's playlist — try again.", isError: true)
             return false
         }
-        let name = sourceCtx.playlistName ?? "playlist"
+        // Held for the count *and* the delete: `occurrenceCount` and `commitRemove` deliberately
+        // don't touch `isBusy` themselves, so it's raised once per action rather than flickering
+        // off between two network calls of the same press.
         isBusy = true
         defer { isBusy = false }
+        if settings.warnOnDuplicateRemoval,
+           let count = await occurrenceCount(of: uri, inPlaylist: src), count > 1 {
+            pendingRemovalWork = (uri: uri, playlistId: src,
+                                  playlistName: sourceCtx.playlistName ?? "playlist")
+            pendingDuplicateRemoval = PendingDuplicateRemoval(trackName: trackName(forURI: uri),
+                                                             playlistName: sourceCtx.playlistName ?? "this playlist",
+                                                             count: count)
+            DebugLog.log("REMOVE held for confirmation [\(intent.gesture)] \(uri): \(count) copies in playlist \(src)")
+            return false
+        }
+        return await commitRemove(uri: uri, playlistId: src,
+                                  playlistName: sourceCtx.playlistName ?? "playlist", intent: intent)
+    }
+
+    /// The rows `uri` occupies in the playlist, or nil when that couldn't be established.
+    ///
+    /// Nil is deliberately not treated as "stop": a rate-limited or offline count would then turn
+    /// every Remove into a dead button. The removal proceeds with the behavior it has always had,
+    /// and the log records that the check didn't run.
+    private func occurrenceCount(of uri: String, inPlaylist playlistId: String) async -> Int? {
         do {
-            try await provider.removeTrack(uri: uri, fromPlaylist: src, intent: intent)
+            return try await provider.playlistOccurrences(of: uri, inPlaylist: playlistId)
+        } catch {
+            DebugLog.log("duplicate check skipped for \(uri) in \(playlistId): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The user pressed "Remove all N". This is the only caller that deletes without counting —
+    /// the count is what they were just shown.
+    func confirmDuplicateRemoval() {
+        guard let work = pendingRemovalWork else { return }
+        pendingRemovalWork = nil
+        pendingDuplicateRemoval = nil
+        let intent = UserRemovalIntent("Remove all N (confirmed)")
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            let ok = await commitRemove(uri: work.uri, playlistId: work.playlistId,
+                                        playlistName: work.playlistName, intent: intent)
+            if ok, settings.skipToNextAfterRemove, nowPlaying?.uri == work.uri { next() }
+        }
+    }
+
+    /// Dismiss the prompt without deleting anything.
+    ///
+    /// Nothing dismisses this automatically — not even a track change. The held-review Remove
+    /// arms the prompt *after* `finishHold` has already advanced playback, so expiring it on the
+    /// next URI would silently swallow that path's removal. The prompt names its own track and
+    /// playlist and acts on a frozen context, so it stays correct however long it sits there.
+    func cancelDuplicateRemoval() {
+        guard pendingRemovalWork != nil || pendingDuplicateRemoval != nil else { return }
+        pendingRemovalWork = nil
+        pendingDuplicateRemoval = nil
+    }
+
+    /// The deletion itself, past every guard. Split out so the confirmed path and the
+    /// single-row path share one body — a second copy is how the two would drift.
+    /// Callers own `isBusy`.
+    private func commitRemove(uri: String, playlistId: String, playlistName: String,
+                              intent: UserRemovalIntent) async -> Bool {
+        do {
+            try await provider.removeTrack(uri: uri, fromPlaylist: playlistId, intent: intent)
             // If that playlist *was* the target, the duplicate-detection cache must forget the
             // track — otherwise it still reads as "already in target" and auto-skip keeps
             // skipping a song that is no longer there.
-            if src == settings.targetPlaylistId {
+            if playlistId == settings.targetPlaylistId {
                 // Disk always; memory only when the in-memory set is actually this playlist's.
                 // Mutating a set loaded for a different target would edit the wrong playlist's
                 // view of itself.
-                history.removeFromMembership(targetId: src, uri: uri)
-                if membershipTargetId == src { targetMembership.remove(uri) }
+                history.removeFromMembership(targetId: playlistId, uri: uri)
+                if membershipTargetId == playlistId { targetMembership.remove(uri) }
             }
-            setStatus("Removed from \(name)")
+            setStatus("Removed from \(playlistName)")
             return true
         } catch {
             setStatus("Remove failed: \(error.localizedDescription)", isError: true)
@@ -733,10 +840,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The display name for a URI, for the confirmation prompt. Nil when neither the live track
+    /// nor the held snapshot is the track in question.
+    private func trackName(forURI uri: String) -> String? {
+        if let np = nowPlaying, np.uri == uri, !np.name.isEmpty { return np.name }
+        if case .held(let held) = reviewState, held.snapshot.uri == uri, !held.snapshot.name.isEmpty {
+            return held.snapshot.name
+        }
+        return nil
+    }
+
     // MARK: Library — clear "Your Episodes"
 
     /// Step 1 of 2: count what's there. Counting is a separate step precisely so the confirm
     /// prompt can name a real number instead of asking the user to approve an unknown quantity.
+    ///
+    /// The URIs behind that number are kept, not just the count: step 2 removes the intersection
+    /// of this list with a fresh read, so the press can never unsave more than what was approved.
     func beginClearYourEpisodes() {
         guard isAuthorized, hasLibraryScopes else { return }
         guard clearEpisodes == .idle else { return }
@@ -744,21 +864,28 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let episodes = try await provider.savedEpisodes()
+                approvedEpisodeURIs = episodes.map(\.uri)
                 // Nothing to do — skip the confirm rather than asking to delete zero things.
                 clearEpisodes = episodes.isEmpty ? .finished(removed: 0)
                                                  : .confirming(count: episodes.count)
             } catch {
+                approvedEpisodeURIs = []
                 clearEpisodes = .failed(error.localizedDescription)
             }
         }
     }
 
-    func cancelClearYourEpisodes() { clearEpisodes = .idle }
+    func cancelClearYourEpisodes() {
+        approvedEpisodeURIs = []
+        clearEpisodes = .idle
+    }
 
     /// Dismiss a terminal result and return the row to its resting state.
     func acknowledgeClearYourEpisodes() {
         switch clearEpisodes {
-        case .finished, .failed: clearEpisodes = .idle
+        case .finished, .failed:
+            approvedEpisodeURIs = []
+            clearEpisodes = .idle
         default: break
         }
     }
@@ -766,19 +893,27 @@ final class AppModel: ObservableObject {
     /// Step 2 of 2: the destructive press, and the only place a bulk-unsave intent is created.
     ///
     /// Re-reads the library first: the confirmed count came from a fetch that may be minutes old,
-    /// and acting on that stale list could unsave an episode saved since. Stops at the first
-    /// failure (including a 429 backoff) and reports how far it got — silently retrying a bulk
-    /// delete against a rate limit is how you turn one problem into two.
+    /// and acting on that stale list could unsave an episode that has since been removed
+    /// elsewhere. The fresh read is then narrowed to what the user actually approved
+    /// (`LibraryLogic.removableURIs`) — otherwise "Remove 340 episodes" could quietly unsave 342
+    /// because two more were saved while the confirm sat on screen. Stops at the first failure
+    /// (including a 429 backoff) and reports how far it got — silently retrying a bulk delete
+    /// against a rate limit is how you turn one problem into two.
     func confirmClearYourEpisodes() {
         guard case .confirming = clearEpisodes else { return }
         guard isAuthorized, hasLibraryScopes else { return }
+        let approved = approvedEpisodeURIs
         let intent = UserRemovalIntent("Clear Your Episodes button (confirmed)")
         clearEpisodes = .clearing(done: 0, total: 0)
         Task {
             var removed = 0
             var total = 0
             do {
-                let uris = try await provider.savedEpisodes().map(\.uri)
+                let current = try await provider.savedEpisodes().map(\.uri)
+                let uris = LibraryLogic.removableURIs(confirmed: approved, current: current)
+                if current.count > uris.count {
+                    DebugLog.log("clear Your Episodes: leaving \(current.count - uris.count) episode(s) saved since you confirmed")
+                }
                 total = uris.count
                 guard total > 0 else {
                     clearEpisodes = .finished(removed: 0)

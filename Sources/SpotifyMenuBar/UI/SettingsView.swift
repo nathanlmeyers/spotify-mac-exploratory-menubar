@@ -71,6 +71,10 @@ struct SettingsView: View {
                 .help("When you press Remove, also advance to the next song instead of finishing the one you just removed.")
             Toggle("Skip to the next track after I add", isOn: $settings.skipToNextAfterAdd)
                 .help("When you press Add, also advance to the next song. Off by default so you can keep enjoying a track you like.")
+
+            Toggle("Ask before removing a song that's in the playlist more than once",
+                   isOn: $settings.warnOnDuplicateRemoval)
+                .help("Spotify can only delete every copy of a song at once, so one Remove can take several rows. This checks first and shows you the number. It costs one read of the playlist per Remove.")
         }
     }
 
@@ -322,7 +326,9 @@ struct SettingsView: View {
 
             case .finished(let removed):
                 HStack {
-                    caption(removed == 0 ? "Your Episodes is already empty."
+                    // Not "already empty": a clear only touches what was approved, so zero can
+                    // also mean everything on that list was unsaved elsewhere first.
+                    caption(removed == 0 ? "Nothing left to remove."
                                          : "Removed \(removed) episode\(removed == 1 ? "" : "s").")
                     Spacer()
                     Button("Done") { model.acknowledgeClearYourEpisodes() }.controlSize(.small)

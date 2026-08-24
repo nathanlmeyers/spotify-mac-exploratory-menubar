@@ -12,6 +12,10 @@ final class Settings: ObservableObject {
     @Published var removeFromSourceOnAdd: Bool { didSet { d.set(removeFromSourceOnAdd, forKey: K.moveOnAdd) } }
     @Published var skipToNextAfterRemove: Bool { didSet { d.set(skipToNextAfterRemove, forKey: K.skipAfterRemove) } }
     @Published var skipToNextAfterAdd: Bool { didSet { d.set(skipToNextAfterAdd, forKey: K.skipAfterAdd) } }
+    /// Ask before a Remove that would take more than one row. Spotify deletes by URI with no
+    /// positions, so a track sitting in a playlist twice loses both copies to one press; the
+    /// check costs a full playlist read, which is why it can be switched off.
+    @Published var warnOnDuplicateRemoval: Bool { didSet { d.set(warnOnDuplicateRemoval, forKey: K.warnDuplicateRemoval) } }
 
     // MARK: Menu bar
     @Published var menuBarTitleMode: MenuBarTitleMode {
@@ -67,6 +71,7 @@ final class Settings: ObservableObject {
         removeFromSourceOnAdd = bool(K.moveOnAdd, default: false)
         skipToNextAfterRemove = bool(K.skipAfterRemove, default: true)
         skipToNextAfterAdd = bool(K.skipAfterAdd, default: false)
+        warnOnDuplicateRemoval = bool(K.warnDuplicateRemoval, default: true)
         // Menu bar text. `showTrackTitleInMenuBar` (a plain on/off) is migrated to the
         // three-way mode: "on" becomes `.whenHeld` rather than `.always`, because an
         // always-on title is what grew wide enough for macOS to hide the status item —
@@ -166,6 +171,7 @@ final class Settings: ObservableObject {
         static let moveOnAdd = "removeFromSourceOnAdd"
         static let skipAfterRemove = "skipToNextAfterRemove"
         static let skipAfterAdd = "skipToNextAfterAdd"
+        static let warnDuplicateRemoval = "warnOnDuplicateRemoval"
         static let titleMode = "menuBarTitleMode"
         static let titleMaxWidth = "menuBarTitleMaxWidth"
         /// Retired on/off title flag, migrated into `titleMode`. Never read after init.

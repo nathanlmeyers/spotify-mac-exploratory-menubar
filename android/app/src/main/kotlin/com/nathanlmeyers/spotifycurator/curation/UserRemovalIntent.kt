@@ -31,6 +31,13 @@ class UserRemovalIntent private constructor(
         fun heldPanelRemoveButton() = UserRemovalIntent("held-panel Remove button")
 
         /**
+         * The second press that answers a duplicate-removal prompt — either the in-app
+         * "Remove all N" button or a confirming Remove press on the notification. Its own
+         * factory so the log says which deletions were multi-row and deliberately confirmed.
+         */
+        fun confirmedDuplicateRemoval() = UserRemovalIntent("Remove all N (confirmed)")
+
+        /**
          * The Add button, when "move on add" is enabled — the press authorizes both halves of
          * the move. Still a button press; still gated by `DiscoveryLogic.mayRemoveFromSource`,
          * which refuses to move-delete out of the target playlist.

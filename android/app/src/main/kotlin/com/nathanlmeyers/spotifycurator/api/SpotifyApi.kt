@@ -102,10 +102,32 @@ class SpotifyApi(private val auth: SpotifyAuth) {
      */
     suspend fun playlistTrackUris(id: String): Set<String> {
         val uris = mutableSetOf<String>()
-        paginate<PlaylistItemsPage>(url("/playlists/$id/items", "limit" to "100")) { page ->
-            page.items.forEach { entry -> entry.uri()?.let(uris::add) }
-        }
+        forEachPlaylistItemUri(id) { uris += it }
         return uris
+    }
+
+    /**
+     * How many rows in a playlist carry [uri].
+     *
+     * This is what lets the Remove confirmation state a real number. [removeTrack] deletes by URI
+     * with no positions, so it takes **every** copy; a playlist holding the same song three times
+     * loses three rows to one press. Counting is a full playlist walk — the same cost as
+     * [playlistTrackUris] — which is why it is gated on a setting rather than always run.
+     */
+    suspend fun playlistOccurrences(uri: String, playlistId: String): Int {
+        var count = 0
+        forEachPlaylistItemUri(playlistId) { if (it == uri) count++ }
+        return count
+    }
+
+    /**
+     * Walks every item URI in a playlist, in playlist order. Shared by the duplicate-detection
+     * set and the occurrence count so the two can't disagree about which rows are real.
+     */
+    private suspend fun forEachPlaylistItemUri(id: String, body: (String) -> Unit) {
+        paginate<PlaylistItemsPage>(url("/playlists/$id/items", "limit" to "100")) { page ->
+            page.items.forEach { entry -> entry.uri()?.let(body) }
+        }
     }
 
     suspend fun addTrack(uri: String, playlistId: String) {
