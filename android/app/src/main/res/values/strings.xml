@@ -7,6 +7,9 @@
     <string name="action_add">Add</string>
     <string name="action_remove">Remove</string>
     <string name="action_skip">Skip</string>
+    <!-- The Add button once the song is already in the target playlist: shown, not pressable. -->
+    <string name="action_added">Added</string>
+    <string name="action_added_description">Already in your target playlist</string>
 
     <!--
       Collapsed-row glyphs. Plain ASCII/BMP characters guaranteed to be in the system font —
@@ -16,6 +19,11 @@
     <string name="glyph_add" translatable="false">+</string>
     <string name="glyph_remove" translatable="false">−</string>
     <string name="glyph_skip" translatable="false">»</string>
+    <!--
+      U+2713 CHECK MARK, for the same reason as the three above: BMP, present in Roboto, and
+      already the tick this app draws in its setup checklist.
+    -->
+    <string name="glyph_added" translatable="false">✓</string>
 
     <!--
       The Discovery switch in the expanded view. The label names the *current* state rather than

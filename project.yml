@@ -58,6 +58,7 @@ targets:
       - path: Sources/SpotifyMenuBar/UI/MenuBarTitle.swift
       - path: Sources/SpotifyMenuBar/API/RateLimit.swift
       - path: Sources/SpotifyMenuBar/Support/LibraryLogic.swift
+      - path: Sources/SpotifyMenuBar/Support/CurationLogic.swift
       - path: Sources/SpotifyMenuBar/Discovery/NewReleaseLogic.swift
       # Which copy of the app owns the menu bar. Pure Foundation precisely so the rule can be
       # tested here rather than by launching four copies and watching the menu bar.

@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1DB954</color>
+
+    <!--
+      The Add button's "already added" green. Night-qualified rather than one literal, because a
+      notification is drawn on a light background in day mode and a dark one at night, and the
+      Spotify green that reads on black is close to invisible on white. This is the one thing a
+      RemoteViews *can* have resolved for it — the system inflates the layout in a context
+      configured for the current UI mode — unlike the theme attributes styles.xml warns off.
+    -->
+    <color name="curator_added">#1B7F3B</color>
 </resources>
