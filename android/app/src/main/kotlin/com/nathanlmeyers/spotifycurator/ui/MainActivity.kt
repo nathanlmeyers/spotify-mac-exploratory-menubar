@@ -190,13 +190,24 @@ private fun CuratorScreen() {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Setup", fontWeight = FontWeight.Medium)
 
+                    // `isAuthorized` only means "there are tokens on disk". A grant Spotify has
+                    // revoked keeps its tokens, so on its own it would sit here reading "Logged in"
+                    // while every call fails — which is exactly how a dead login stayed invisible
+                    // for two days while the lock-screen buttons quietly greyed themselves out.
+                    val loggedIn = auth.isAuthorized && !auth.sessionExpired
                     ChecklistRow(
                         label = "Spotify account",
-                        done = auth.isAuthorized,
-                        detail = if (auth.isAuthorized) "Logged in" else "Needed to edit playlists",
-                        actionLabel = if (auth.isAuthorized) "Log out" else "Log in",
+                        done = loggedIn,
+                        detail = when {
+                            !auth.hasClientId ->
+                                "This build has no Spotify Client ID — rebuild with android/local.properties"
+                            auth.sessionExpired -> "Session expired — log in again"
+                            auth.isAuthorized -> "Logged in"
+                            else -> "Needed to edit playlists"
+                        },
+                        actionLabel = if (loggedIn) "Log out" else "Log in",
                         onAction = {
-                            if (auth.isAuthorized) engine.logout() else engine.auth.beginLogin(context)
+                            if (loggedIn) engine.logout() else engine.auth.beginLogin(context)
                         },
                     )
 

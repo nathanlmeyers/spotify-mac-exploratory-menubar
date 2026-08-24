@@ -20,6 +20,18 @@ val clientId: String = Properties().run {
     getProperty("spotify.clientId", "")
 }
 
+// Warn, don't fail: an empty ID has to keep building (see above). But it must not be *silent* —
+// a build without one installs and runs perfectly until the first token refresh an hour later,
+// then breaks in a way that looks nothing like its cause.
+if (clientId.isEmpty()) {
+    logger.warn(
+        "\n" +
+            "WARNING: spotify.clientId is empty — set it in android/local.properties.\n" +
+            "         This build will log in and run for up to an hour on an existing token,\n" +
+            "         then fail every Spotify call once that token needs refreshing.\n"
+    )
+}
+
 /** Must match a Redirect URI registered on the Spotify dashboard. Shared with the macOS app. */
 val redirectScheme = "spotifymenubar"
 val redirectHost = "callback"

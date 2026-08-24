@@ -40,4 +40,26 @@
         <item name="android:paddingEnd">0dp</item>
         <item name="android:textSize">24sp</item>
     </style>
+
+    <!--
+      The "why is that button dead?" line. Normally gone: both content views deliberately carry no
+      title, artist or status, because Spotify's own media notification sits directly above showing
+      all three, and repeating it only steals width from the buttons. It appears solely when
+      something has gone wrong that the buttons alone can't express — a dead login, or a source
+      playlist you can't edit — because a greyed-out Remove with no explanation is indistinguishable
+      from "this playlist isn't yours" and sends you hunting through settings that cannot help.
+
+      Notification.Info rather than a literal colour: a RemoteViews TextView can't resolve theme
+      attributes, and this has to stay legible on both the light and dark notification background.
+    -->
+    <style name="CuratorNotificationStatus">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">8dp</item>
+        <item name="android:layout_marginEnd">8dp</item>
+        <item name="android:layout_marginBottom">4dp</item>
+        <item name="android:maxLines">2</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textAppearance">@style/TextAppearance.Compat.Notification.Info</item>
+    </style>
 </resources>

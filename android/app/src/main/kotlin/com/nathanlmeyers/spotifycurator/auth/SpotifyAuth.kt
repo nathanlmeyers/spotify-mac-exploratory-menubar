@@ -53,6 +53,17 @@ data class AuthState(
     val isAuthorized: Boolean = false,
     val hasLibraryScopes: Boolean = false,
     val lastError: String? = null,
+    /**
+     * Spotify has rejected the saved grant for good — every API call will fail until someone logs
+     * in again.
+     *
+     * Distinct from `!isAuthorized`, which only means "no tokens on disk". A dead grant keeps its
+     * tokens, so without this flag the app reports "Logged in" forever while nothing works, and
+     * the only visible symptom is buttons quietly greying out.
+     */
+    val sessionExpired: Boolean = false,
+    /** False when this build was compiled without `android/local.properties` — login can't work. */
+    val hasClientId: Boolean = true,
 )
 
 /**
@@ -189,8 +200,21 @@ class SpotifyAuth private constructor(private val app: Context) {
     suspend fun validAccessToken(): String = refreshLock.withLock {
         val current = tokens ?: throw AuthException("Not logged in to Spotify.")
         if (!current.isExpired) return@withLock current.accessToken
+        // Refreshing is the first thing that needs the Client ID — the access token minted at login
+        // works without it. A build with no ID therefore keeps working right up until the hour is
+        // up, then fails with a bare 400 that looks nothing like its cause. Say it plainly instead.
+        if (!hasClientId) {
+            val message = "This build has no Spotify Client ID — rebuild with android/local.properties."
+            markSessionExpired(message)
+            throw AuthException(message, isPermanent = true)
+        }
         val generation = logoutGeneration.get()
-        val refreshed = refresh(current)
+        val refreshed = try {
+            refresh(current)
+        } catch (e: AuthException) {
+            if (e.isPermanent) markSessionExpired(e.message ?: "Spotify rejected the saved login.")
+            throw e
+        }
         if (generation != logoutGeneration.get()) {
             DebugLog.log("token refresh discarded — logged out while it was in flight")
             throw AuthException("Not logged in to Spotify.")
@@ -203,6 +227,7 @@ class SpotifyAuth private constructor(private val app: Context) {
         logoutGeneration.incrementAndGet()
         tokens = null
         store.delete()
+        _state.value = _state.value.copy(sessionExpired = false, lastError = null)
         publish()
     }
 
@@ -231,7 +256,10 @@ class SpotifyAuth private constructor(private val app: Context) {
 
         Http.client.newCall(req).await().use { resp ->
             if (!resp.isSuccessful) {
-                throw AuthException("Spotify auth request failed (HTTP ${resp.code}).")
+                // The body is the only thing that distinguishes a revoked grant from a wrong
+                // Client ID from a server blip; all three arrive as HTTP 400.
+                val failure = TokenFailures.classify(resp.code, runCatching { resp.body?.string() }.getOrNull())
+                throw AuthException(failure.message, failure.isPermanent)
             }
             @Serializable
             data class TokenResponse(
@@ -255,7 +283,15 @@ class SpotifyAuth private constructor(private val app: Context) {
     private fun persist(bundle: TokenBundle) {
         tokens = bundle
         store.save(Http.json.encodeToString(bundle))
+        // A token in hand is the only proof the grant is alive, so clear the flag here rather than
+        // anywhere a caller might forget.
+        _state.value = _state.value.copy(sessionExpired = false, lastError = null)
         publish()
+    }
+
+    private fun markSessionExpired(message: String) {
+        DebugLog.log("auth: session expired — $message")
+        _state.value = _state.value.copy(sessionExpired = true, lastError = message)
     }
 
     private fun publish() {
@@ -263,10 +299,12 @@ class SpotifyAuth private constructor(private val app: Context) {
         _state.value = _state.value.copy(
             isAuthorized = t != null,
             hasLibraryScopes = LIBRARY_SCOPES.all { t?.grants(it) == true },
+            hasClientId = hasClientId,
         )
     }
 
-    class AuthException(message: String) : Exception(message)
+    /** @param isPermanent see [TokenFailure.isPermanent] — retrying will not help. */
+    class AuthException(message: String, val isPermanent: Boolean = false) : Exception(message)
 
     companion object {
         private const val KEY_VERIFIER = "pkce_verifier"
