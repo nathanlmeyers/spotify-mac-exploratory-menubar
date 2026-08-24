@@ -138,6 +138,11 @@ final class SpotifyProvider {
         try await api.addTrack(uri: uri, toPlaylist: playlistId)
     }
 
+    /// How many rows in a playlist carry `uri` — the blast radius of one Remove press.
+    func playlistOccurrences(of uri: String, inPlaylist playlistId: String) async throws -> Int {
+        try await api.playlistOccurrences(of: uri, inPlaylist: playlistId)
+    }
+
     /// Deletes a track from a playlist. Requires a `UserRemovalIntent`, which only
     /// AppModel's button handlers can construct — so nothing automated can reach here.
     /// Always logged: this is the one destructive call in the app, and an unlogged

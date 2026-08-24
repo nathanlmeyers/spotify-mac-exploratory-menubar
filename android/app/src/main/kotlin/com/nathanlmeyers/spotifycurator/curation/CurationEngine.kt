@@ -39,6 +39,12 @@ data class CuratorState(
     val isBusy: Boolean = false,
     /** Discovery mode's review state; [ReviewState.Held] is what turns the row into a verdict. */
     val review: ReviewState = ReviewState.Inactive,
+    /**
+     * Set when a Remove press turned out to be a multi-row deletion. The app's Now-playing card
+     * swaps its buttons for a confirmation while this is non-null; the notification puts
+     * [PendingDuplicateRemoval.prompt] in its status line and lets a second Remove press answer it.
+     */
+    val pendingDuplicateRemoval: PendingDuplicateRemoval? = null,
 )
 
 /**
@@ -621,6 +627,18 @@ class CurationEngine private constructor(context: Context) {
                     isMove = true,
                 )
             ) {
+                val sourceName = sourceCtx.playlistName ?: "the source"
+                // A move whose source holds several copies would delete all of them. Unlike the
+                // Remove button there is nowhere to prompt — an add is normally followed straight
+                // away by a skip, and a confirmation left armed would be answered against the next
+                // track or silently expire. So the add stands, the delete doesn't, and the user is
+                // told; pressing Remove afterwards offers the confirmation properly.
+                val copies = if (settings.warnOnDuplicateRemoval) occurrenceCount(uri, src) else null
+                if (copies != null && copies > 1) {
+                    DebugLog.log("move: refusing to auto-delete $copies copies of $uri from playlist $src")
+                    setStatus("Added to $targetName — left $copies copies in $sourceName. Press Remove to delete them all.")
+                    return true
+                }
                 api.removeTrack(uri, src, UserRemovalIntent.addButtonMove())
                 setStatus("Moved to $targetName")
             }
@@ -659,6 +677,101 @@ class CurationEngine private constructor(context: Context) {
             return false
         }
         val name = sourceCtx.playlistName ?: "playlist"
+
+        // A second Remove press, for the same track in the same playlist and inside the window,
+        // is the answer to a prompt this method armed earlier. Anything else falls through and
+        // is counted afresh.
+        val pending = _state.value.pendingDuplicateRemoval
+        if (pending != null && pending.isConfirmedBy(uri, src, System.currentTimeMillis())) {
+            clearPendingDuplicateRemoval()
+            return commitRemove(uri, src, name, UserRemovalIntent.confirmedDuplicateRemoval())
+        }
+
+        if (settings.warnOnDuplicateRemoval) {
+            val count = occurrenceCount(uri, src)
+            if (count != null && count > 1) {
+                armDuplicateRemoval(uri, src, name, count)
+                DebugLog.log("REMOVE held for confirmation [${intent.gesture}] $uri: $count copies in playlist $src")
+                return false
+            }
+        }
+        return commitRemove(uri, src, name, intent)
+    }
+
+    /**
+     * The rows [uri] occupies in the playlist, or null when that couldn't be established.
+     *
+     * Null deliberately doesn't mean "stop": a rate-limited or offline count would then turn
+     * every Remove into a dead button. The removal proceeds with the behaviour it has always had,
+     * and the log records that the check didn't run.
+     */
+    private suspend fun occurrenceCount(uri: String, playlistId: String): Int? = try {
+        api.playlistOccurrences(uri, playlistId)
+    } catch (e: Exception) {
+        DebugLog.log("duplicate check skipped for $uri in $playlistId: ${e.message}")
+        null
+    }
+
+    private fun armDuplicateRemoval(uri: String, playlistId: String, playlistName: String, count: Int) {
+        val pending = PendingDuplicateRemoval(
+            uri = uri,
+            trackName = _state.value.nowPlaying?.takeIf { it.uri == uri }?.name,
+            playlistId = playlistId,
+            playlistName = playlistName,
+            count = count,
+            armedAtMs = System.currentTimeMillis(),
+        )
+        _state.update { it.copy(pendingDuplicateRemoval = pending) }
+        setStatus(pending.prompt())
+    }
+
+    /**
+     * The in-app "Remove all N" button. Unlike the notification's second press this needs no
+     * window and no track match: the button is labelled with the count and sits next to the
+     * prompt, so it can only mean the removal it is drawn beside.
+     */
+    fun confirmDuplicateRemoval() = scope.launch {
+        withActionLock("Remove all") {
+            val pending = _state.value.pendingDuplicateRemoval ?: return@withActionLock
+            clearPendingDuplicateRemoval()
+            busy(true)
+            try {
+                val ok = commitRemove(
+                    pending.uri, pending.playlistId, pending.playlistName,
+                    UserRemovalIntent.confirmedDuplicateRemoval(),
+                )
+                if (ok && settings.skipToNextAfterRemove &&
+                    _state.value.nowPlaying?.uri == pending.uri
+                ) {
+                    watcher.skipToNext()
+                }
+            } finally {
+                busy(false)
+            }
+        }
+    }
+
+    /** Dismiss the prompt without deleting anything. */
+    fun cancelDuplicateRemoval() {
+        if (_state.value.pendingDuplicateRemoval == null) return
+        clearPendingDuplicateRemoval()
+        setStatus(null)
+    }
+
+    private fun clearPendingDuplicateRemoval() {
+        _state.update { it.copy(pendingDuplicateRemoval = null) }
+    }
+
+    /**
+     * The deletion itself, past every guard. Split out so the confirmed path and the single-row
+     * path share one body — a second copy is how the two would drift.
+     */
+    private suspend fun commitRemove(
+        uri: String,
+        src: String,
+        name: String,
+        intent: UserRemovalIntent,
+    ): Boolean {
         return try {
             if (src == settings.targetPlaylistId) {
                 membershipLock.withLock {

@@ -23,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -342,6 +343,11 @@ private fun CuratorScreen() {
                     ToggleRow("Skip to next after Remove", null, pref { skipToNextAfterRemove }) {
                         settings.skipToNextAfterRemove = it
                     }
+                    ToggleRow(
+                        "Ask before removing duplicates",
+                        "One Remove takes every copy of a song in the playlist — check the count first",
+                        pref { warnOnDuplicateRemoval },
+                    ) { settings.warnOnDuplicateRemoval = it }
                 }
             }
 
@@ -410,13 +416,41 @@ private fun CuratorScreen() {
                             else MaterialTheme.colorScheme.onSurface,
                         )
                     }
-                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { engine.onAddPressed() }, enabled = !state.isBusy) { Text("Add") }
-                        Button(
-                            onClick = { engine.onRemovePressed() },
-                            enabled = !state.isBusy && state.source.isEditablePlaylist,
-                        ) { Text("Remove") }
-                        Button(onClick = { engine.onSkipPressed() }) { Text("Skip") }
+                    // While a multi-row removal is waiting on an answer the curation buttons are
+                    // replaced rather than joined: the decision is modal, and leaving Add/Remove
+                    // live underneath invites answering it by accident.
+                    val pending = state.pendingDuplicateRemoval
+                    if (pending != null) {
+                        Text(
+                            "Spotify can only remove every copy at once. This can't be undone.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(
+                            Modifier.padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            TextButton(onClick = { engine.cancelDuplicateRemoval() }) { Text("Cancel") }
+                            Button(
+                                onClick = { engine.confirmDuplicateRemoval() },
+                                enabled = !state.isBusy,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                            ) { Text("Remove all ${pending.count}") }
+                        }
+                    } else {
+                        Row(
+                            Modifier.padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(onClick = { engine.onAddPressed() }, enabled = !state.isBusy) { Text("Add") }
+                            Button(
+                                onClick = { engine.onRemovePressed() },
+                                enabled = !state.isBusy && state.source.isEditablePlaylist,
+                            ) { Text("Remove") }
+                            Button(onClick = { engine.onSkipPressed() }) { Text("Skip") }
+                        }
                     }
                 }
             }

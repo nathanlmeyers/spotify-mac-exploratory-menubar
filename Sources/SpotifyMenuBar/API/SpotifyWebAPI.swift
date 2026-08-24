@@ -113,12 +113,34 @@ final class SpotifyWebAPI {
     }
 
     /// All track URIs in a playlist (paginated) — used for duplicate detection.
-    /// Uses the Feb-2026 `/items` endpoint; the nested object was renamed `track` -> `item`
-    /// (we read either to stay robust).
     ///
     /// A big playlist is dozens of requests, so callers under a request budget (the release
     /// radar) pass `pace` to throttle between pages.
     func playlistTrackURIs(id: String, pace: (() async -> Void)? = nil) async throws -> Set<String> {
+        var uris = Set<String>()
+        try await forEachPlaylistItemURI(id: id, pace: pace) { uris.insert($0) }
+        return uris
+    }
+
+    /// How many rows in a playlist carry `uri`.
+    ///
+    /// This is what makes the Remove confirmation honest. `removeTrack` deletes by URI with no
+    /// positions, so it takes **every** copy; a playlist that picked up the same song three times
+    /// loses three rows to one press. Counting first is a full playlist walk — the same cost as
+    /// `playlistTrackURIs`, which is why it's gated on a setting rather than run unconditionally.
+    func playlistOccurrences(of uri: String, inPlaylist id: String) async throws -> Int {
+        var count = 0
+        try await forEachPlaylistItemURI(id: id) { if $0 == uri { count += 1 } }
+        return count
+    }
+
+    /// Walks every item URI in a playlist, in playlist order, handing each to `body`.
+    ///
+    /// Uses the Feb-2026 `/items` endpoint; the nested object was renamed `track` -> `item`
+    /// (we read either to stay robust). Shared by the duplicate-detection set and the
+    /// occurrence count so the two can't drift on which rows they consider real.
+    private func forEachPlaylistItemURI(id: String, pace: (() async -> Void)? = nil,
+                                        _ body: (String) -> Void) async throws {
         struct Page: Decodable {
             struct Item: Decodable {
                 let item: Inner?
@@ -129,12 +151,10 @@ final class SpotifyWebAPI {
             let items: [Item]
             let next: String?
         }
-        var uris = Set<String>()
         try await paginate(from: urlForPath("/playlists/\(id)/items", query: [.init(name: "limit", value: "100")]),
                            next: \Page.next, pace: pace) { page in
-            for entry in page.items { if let uri = entry.uri { uris.insert(uri) } }
+            for entry in page.items { if let uri = entry.uri { body(uri) } }
         }
-        return uris
     }
 
     func addTrack(uri: String, toPlaylist id: String) async throws {

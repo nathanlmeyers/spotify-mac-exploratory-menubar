@@ -41,6 +41,22 @@ enum LibraryLogic {
         }
     }
 
+    /// What a confirmed clear should actually remove: everything still saved that the user
+    /// approved, in the library's own order.
+    ///
+    /// The confirm step re-reads the library rather than trusting a count that may be minutes
+    /// old — but that fresh read can legitimately be *larger*, because an episode saved between
+    /// the count and the press is genuinely there now. Removing it too would unsave something
+    /// the number on the button never covered, so the fresh list is filtered down to the
+    /// approved set. Anything unsaved elsewhere in the meantime just drops out.
+    ///
+    /// Order follows `current` (oldest-saved first), so a clear that stops partway has still
+    /// removed the oldest episodes — the ones least likely to be wanted back.
+    static func removableURIs(confirmed: [String], current: [String]) -> [String] {
+        let approved = Set(confirmed)
+        return current.filter { approved.contains($0) }
+    }
+
     /// Progress caption for a running clear, e.g. "Removed 150 of 340 episodes…".
     static func progressLabel(done: Int, total: Int) -> String {
         "Removed \(done) of \(total) episode\(total == 1 ? "" : "s")…"
