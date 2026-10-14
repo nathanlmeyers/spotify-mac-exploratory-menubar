@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presentedByHold = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Notification clicks must have a delegate before the launch completes, or a click
+        // that starts the app is dropped.
+        model.installNotifications()
         // Receive the spotifymenubar://callback URL (PKCE redirect).
         NSAppleEventManager.shared().setEventHandler(
             self,
