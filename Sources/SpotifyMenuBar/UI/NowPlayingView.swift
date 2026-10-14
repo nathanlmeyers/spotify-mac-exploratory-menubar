@@ -201,19 +201,24 @@ struct NowPlayingView: View {
         return "From \(from)  →  \(to)"
     }
 
+    /// Shuffle on the left, the Discover toggle on the right, prev/play/next dead centre. A
+    /// ZStack rather than one HStack so the two ends can be any width without nudging play/pause.
     private func transport(_ np: NowPlaying) -> some View {
-        HStack(spacing: 18) {
-            Button { model.toggleShuffle() } label: {
-                Image(systemName: "shuffle").foregroundStyle(np.isShuffling ? Color.accentColor : .primary)
-            }.help("Shuffle")
-            Spacer()
-            Button { model.previous() } label: { Image(systemName: "backward.fill") }.help("Previous")
-            Button { model.togglePlayPause() } label: {
-                Image(systemName: np.isPlaying ? "pause.fill" : "play.fill").font(.title3)
-            }.help(np.isPlaying ? "Pause" : "Play")
-            Button { model.next() } label: { Image(systemName: "forward.fill") }.help("Next")
-            Spacer()
-            Image(systemName: "shuffle").opacity(0)   // counterweight to keep play/pause centered
+        ZStack {
+            HStack {
+                Button { model.toggleShuffle() } label: {
+                    Image(systemName: "shuffle").foregroundStyle(np.isShuffling ? Color.accentColor : .primary)
+                }.help("Shuffle")
+                Spacer()
+                DiscoverToggle(settings: model.settings)
+            }
+            HStack(spacing: 18) {
+                Button { model.previous() } label: { Image(systemName: "backward.fill") }.help("Previous")
+                Button { model.togglePlayPause() } label: {
+                    Image(systemName: np.isPlaying ? "pause.fill" : "play.fill").font(.title3)
+                }.help(np.isPlaying ? "Pause" : "Play")
+                Button { model.next() } label: { Image(systemName: "forward.fill") }.help("Next")
+            }
         }
         .buttonStyle(.borderless)
         .font(.body)
@@ -233,8 +238,8 @@ struct NowPlayingView: View {
     private var curationNormalButtons: some View {
         HStack(spacing: 10) {
             curationButton("Remove", icon: "minus.circle.fill", tint: .red,
-                           disabled: !model.canRemoveFromSource,
-                           help: model.removeDisabledReason ?? "Remove from \(model.source.playlistName ?? "source")") {
+                           disabled: !model.canRemove,
+                           help: model.removeDisabledReason ?? model.removeHelp) {
                 model.removeCurrentFromSource()
             }
             curationButton("Add", icon: "plus.circle.fill", tint: .green,
@@ -262,17 +267,23 @@ struct NowPlayingView: View {
     /// undo, so this is the last place the number can be seen before the rows are gone.
     private func duplicateConfirm(_ pending: PendingDuplicateRemoval) -> some View {
         let subject = pending.trackName.map { "“\($0)”" } ?? "This track"
+        let where_ = pending.duplicated.map { "\($0.playlistName) \($0.count) times" }
+        let also = pending.singles.map(\.playlistName)
         return VStack(alignment: .leading, spacing: 8) {
-            Label("\(subject) is in \(pending.playlistName) \(pending.count) times",
+            Label("\(subject) is in \(where_.joined(separator: " and "))",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.orange)
             Text("Spotify can only remove every copy at once. This can't be undone.")
                 .font(.caption).foregroundStyle(.secondary)
+            if !also.isEmpty {
+                Text("It will also be removed from \(also.joined(separator: " and ")).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { model.cancelDuplicateRemoval() }
-                Button("Remove all \(pending.count)", role: .destructive) {
+                Button("Remove all \(pending.totalRows)", role: .destructive) {
                     model.confirmDuplicateRemoval()
                 }
                 .disabled(model.isBusy)
@@ -285,7 +296,7 @@ struct NowPlayingView: View {
         return HStack(spacing: 8) {
             curationButton("Remove", icon: "minus.circle.fill", tint: .red,
                            disabled: !canRemove,
-                           help: canRemove ? "Remove from source" : (model.heldRemoveDisabledReason(held) ?? "Can't remove")) {
+                           help: canRemove ? model.heldRemoveHelp(held) : (model.heldRemoveDisabledReason(held) ?? "Can't remove")) {
                 model.heldRemove()
             }
             curationButton("Add", icon: "plus.circle.fill", tint: .green,
@@ -352,6 +363,28 @@ struct NowPlayingView: View {
         }
     }
 
+}
+
+/// The Discover mode switch, in the transport row so it's a click away while listening.
+///
+/// Its own view with its own `@ObservedObject`: `NowPlayingView` observes `model`, and this
+/// must re-render on the setting alone. Flipping it already resets the discovery engine
+/// (see the `$discoveryEnabled` sink in `AppModel`), same as the Settings toggle.
+private struct DiscoverToggle: View {
+    @ObservedObject var settings: Settings
+
+    var body: some View {
+        Button { settings.discoveryEnabled.toggle() } label: {
+            Label("Discover", systemImage: "sparkles")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(settings.discoveryEnabled ? Color.accentColor : .secondary)
+        }
+        .help(settings.discoveryEnabled
+              ? "Discover mode is on: each song is held before it ends so you can Add, Remove or Next. Click to turn off."
+              : "Discover mode: hold each song before it ends so you can Add, Remove or Next.")
+        .accessibilityLabel("Discover mode")
+        .accessibilityValue(settings.discoveryEnabled ? "On" : "Off")
+    }
 }
 
 /// A seek slider that follows playback unless the user is actively dragging it.

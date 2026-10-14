@@ -4,21 +4,33 @@ import AppKit
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var settings: Settings
+    /// Everything past the two playlists and the Discover switch lives behind this. Not
+    /// persisted: the window is short by default and opens that way every time.
+    @State private var showAdvanced = false
 
     var body: some View {
         Form {
             account
             curationSection
-            newReleasesSection
-            topTracksSection
-            suggestedArtistsSection
-            librarySection
-            menuBarSection
-            discoverySection
-            systemSection
+            discoverSection
+            advancedHeader
+            if showAdvanced {
+                curationAdvancedSection
+                newReleasesSection
+                topTracksSection
+                suggestedArtistsSection
+                librarySection
+                menuBarSection
+                discoverAdvancedSection
+                systemSection
+            }
+            quitSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 620)
+        // A grouped Form is a scroll view with no height of its own, so the window height is
+        // set here and `AppDelegate.openSettings` lets the window follow it.
+        .frame(width: 460, height: showAdvanced ? 640 : 360)
+        .animation(.default, value: showAdvanced)
         .confirmationDialog(replaceDialogTitle, isPresented: replaceDialogShown, titleVisibility: .visible) {
             Button("Use Replace") {
                 if let period = pendingReplacePeriod { model.setTopTracksMode(.replace, for: period) }
@@ -41,6 +53,29 @@ struct SettingsView: View {
     private var replaceDialogTitle: String {
         let name = pendingReplacePeriod.flatMap { settings.topTracks($0).playlistName } ?? "this playlist"
         return "Switch “\(name)” to Replace?"
+    }
+
+    // MARK: Advanced
+
+    /// A single row that reveals the rest. Sibling sections rather than `Section`s nested in a
+    /// `DisclosureGroup`: a grouped Form on macOS 13 flattens those into plain rows.
+    private var advancedHeader: some View {
+        Section {
+            Button { showAdvanced.toggle() } label: {
+                HStack {
+                    Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text("Advanced Settings")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityValue(showAdvanced ? "Expanded" : "Collapsed")
+        }
     }
 
     // MARK: Account
@@ -87,6 +122,19 @@ struct SettingsView: View {
                     .disabled(!model.isAuthorized)
             }
 
+            Picker("Discovery playlist", selection: discoveryPlaylistBinding) {
+                Text("None").tag("")
+                ForEach(model.editablePlaylists) { p in Text(p.name).tag(p.id) }
+            }
+            .disabled(!model.isAuthorized)
+            .help("Your inbox of new music. Remove takes the song out of it too, whatever you're listening from.")
+            caption(discoveryPlaylistCaption)
+        }
+    }
+
+    /// The Curation toggles that moved behind Advanced — behaviour tweaks, not setup.
+    @ViewBuilder private var curationAdvancedSection: some View {
+        Section("Curation") {
             Toggle("Also remove from the source playlist when I add (move)", isOn: $settings.removeFromSourceOnAdd)
                 .help("When you press Plus, also remove the song from the playlist you're listening to — if that playlist is editable.")
 
@@ -118,6 +166,23 @@ struct SettingsView: View {
     private var targetCaption: String {
         if let name = settings.targetPlaylistName { return "Adding to: \(name)" }
         return "Pick an editable playlist you own."
+    }
+
+    private var discoveryPlaylistBinding: Binding<String> {
+        Binding(
+            get: { settings.discoveryPlaylistId ?? "" },
+            set: { id in
+                if id.isEmpty { model.clearDiscoveryPlaylist(); return }
+                if let p = model.editablePlaylists.first(where: { $0.id == id }) { model.setDiscoveryPlaylist(p) }
+            }
+        )
+    }
+
+    private var discoveryPlaylistCaption: String {
+        if let name = settings.discoveryPlaylistName {
+            return "Remove also takes the song out of \(name), whatever you're playing from."
+        }
+        return "Remove also takes the song out of this playlist, whatever you're playing from."
     }
 
     // MARK: New releases
@@ -531,15 +596,24 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Discovery (Phase 2)
+    // MARK: Discover mode
 
-    @ViewBuilder private var discoverySection: some View {
+    @ViewBuilder private var discoverSection: some View {
         Section {
-            Toggle("Enable discovery mode", isOn: $settings.discoveryEnabled)
-            Text("Pauses each song just before it ends so you can decide — Add, Remove, or Next — without it auto-advancing. Great for triaging new-releases playlists.")
+            Toggle("Discover mode", isOn: $settings.discoveryEnabled)
+            Text("Pauses each song just before it ends so you can decide — Add, Remove, or Next — without it auto-advancing. Great for triaging new-releases playlists. Also in the panel, next to the playback controls.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
 
-            if settings.discoveryEnabled {
+    /// The alert and auto-skip options for Discover mode. Shown even while the mode is off so
+    /// they can be set up ahead of flipping the switch in the panel.
+    @ViewBuilder private var discoverAdvancedSection: some View {
+        Section {
+            if !settings.discoveryEnabled {
+                caption("Discover mode is off. These apply once it's on.")
+            }
+            Group {
                 Group {
                     Text("Alert me when a song is held:").font(.caption).foregroundStyle(.secondary)
                     Toggle("Auto-open the panel", isOn: $settings.alertAutoOpenPanel)
@@ -558,20 +632,26 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Discovery mode")
+            Text("Discover mode")
         }
     }
 
     // MARK: System
 
     @ViewBuilder private var systemSection: some View {
-        Section {
+        Section("System") {
             Toggle("Launch at login", isOn: $settings.launchAtLogin)
             if BuildInfo.isTransientBuild {
                 Text("Launch at login is unavailable for a debug build — move the app to /Applications first.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(BuildInfo.shortSummary).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Always last and always visible, whatever Advanced is doing.
+    private var quitSection: some View {
+        Section {
             HStack {
                 Spacer()
                 Button("Quit Spotify Menu Bar", role: .destructive) { NSApplication.shared.terminate(nil) }

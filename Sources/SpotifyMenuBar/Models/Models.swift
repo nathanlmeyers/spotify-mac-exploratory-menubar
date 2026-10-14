@@ -69,6 +69,19 @@ struct SourceContext: Equatable {
     var playlistName: String?
     var isEditablePlaylist: Bool
     var trackURI: String?
+    /// The track the `/me/player` lookup ran for, whatever it found — set for album, artist,
+    /// Liked Songs and queue playback too, where `trackURI` stays nil. Distinct from `trackURI`
+    /// on purpose: `trackURI` means "a *playlist* source is confirmed for this track", which is
+    /// what discovery's auto-skip and the tick's retry loop key on. This one only means "the
+    /// lookup finished for this track", which is all a discovery-playlist removal needs to know.
+    var resolvedForURI: String? = nil
 
     static let none = SourceContext(playlistId: nil, playlistName: nil, isEditablePlaylist: false, trackURI: nil)
+}
+
+/// One playlist a Remove press will delete from. A press can name more than one: the playlist
+/// the song is playing from and the discovery playlist it also sits in.
+struct RemovalTarget: Equatable {
+    let playlistId: String
+    let playlistName: String
 }

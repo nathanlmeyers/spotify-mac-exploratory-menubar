@@ -23,11 +23,22 @@ struct UserRemovalIntent {
 /// can't be prevented, only shown: this makes it part of the decision instead of something the
 /// user discovers afterwards in a playlist that is short by four songs.
 struct PendingDuplicateRemoval: Equatable {
+    /// One playlist the press will delete from, and how many rows it takes there.
+    struct Entry: Equatable {
+        let playlistName: String
+        /// 1 for a single row, or when the count couldn't be established (nil never blocks —
+        /// see `occurrenceCount`).
+        let count: Int
+    }
     /// The track's name, when it's known — nil falls back to "This track" in the prompt.
     let trackName: String?
-    let playlistName: String
-    /// Rows that this removal will take. Always > 1; a single-row removal never prompts.
-    let count: Int
+    /// Every playlist the press will hit, in order. At least one entry has `count > 1`; a
+    /// press that takes one row everywhere never prompts.
+    let entries: [Entry]
+
+    var totalRows: Int { entries.reduce(0) { $0 + $1.count } }
+    var duplicated: [Entry] { entries.filter { $0.count > 1 } }
+    var singles: [Entry] { entries.filter { $0.count <= 1 } }
 }
 
 /// Where the "Clear Your Episodes" flow is, so Settings can render it without owning any logic.
@@ -129,13 +140,26 @@ final class AppModel: ObservableObject {
     /// `settings.targetPlaylistId`: a target switch whose fetch fails would otherwise leave the
     /// previous playlist's contents standing behind a disabled Add button.
     private var membershipTargetId: String?
-    /// What the confirmed press will delete, frozen at the moment the count came back. Held
+    /// URIs known to be in the discovery playlist (`settings.discoveryPlaylistId`): what lets
+    /// Remove reach into it for a song playing from an album, an artist page, Liked Songs or
+    /// another playlist. Same shape and caveats as `targetMembership`.
+    @Published private(set) var discoveryPlaylistMembership: Set<String> = []
+    private var membershipDiscoveryPlaylistId: String?
+    /// When the discovery set was last fetched. The playlist gains songs from outside this app,
+    /// so the panel re-reads it when this is old enough (`refreshDiscoveryMembershipIfStale`).
+    private var discoveryMembershipLoadedAt: Date?
+    /// Bumped by every local edit to either membership set. A fetch captures it before the walk
+    /// and discards its result if it moved — otherwise a panel-open read that lands after a
+    /// Remove would put the just-deleted URI straight back and re-enable the button for a song
+    /// that is already gone.
+    private var membershipGen = 0
+    /// What the confirmed press will delete, frozen at the moment the counts came back. Held
     /// separately from the published prompt so the view never sees a URI, and so the deletion
     /// targets exactly the track that was counted rather than whatever is playing by the time
     /// the button is pressed. No `UserRemovalIntent` is stored: the confirming press is itself a
     /// button, and mints its own — an intent is proof of a gesture, so keeping one on ice would
     /// be exactly the stale authorization the type exists to prevent.
-    private var pendingRemovalWork: (uri: String, playlistId: String, playlistName: String)?
+    private var pendingRemovalWork: (uri: String, targets: [RemovalTarget])?
     /// The episode URIs behind the number on the "Remove N episodes" button. Held from the
     /// counting pass to the confirmed press so the clear can't exceed what was approved.
     private var approvedEpisodeURIs: [String] = []
@@ -248,8 +272,13 @@ final class AppModel: ObservableObject {
     /// the held track), falling back to the live source when the frozen source is nil (e.g.
     /// the hold raced source resolution). Never fall through to the successor.
     private func heldSourceContext(_ held: HeldTrack) -> SourceContext? {
+        // The frozen source is only authoritative when it confirmed a *playlist* for the held
+        // track (`trackURI`). A transient no-context read at hold time is frozen as nil, and the
+        // live source — which the tick keeps retrying — is consulted instead. That fallback
+        // matches on `resolvedForURI`, so an album hold yields a settled no-playlist context
+        // rather than nil, which is what lets Remove reach the discovery playlist for it.
         if held.source?.trackURI == held.snapshot.uri { return held.source }
-        if source.trackURI == held.snapshot.uri { return source }
+        if source.resolvedForURI == held.snapshot.uri { return source }
         return nil
     }
 
@@ -262,16 +291,27 @@ final class AppModel: ObservableObject {
     func canRemoveHeld(_ held: HeldTrack) -> Bool {
         guard isAuthorized, held.snapshot.kind.isCuratable, !isBusy,
               let source = heldSourceContext(held) else { return false }
-        return source.isEditablePlaylist && source.playlistId != nil
+        if staleEditableSource(source, for: held.snapshot.uri) { return false }
+        return !removalTargets(for: held.snapshot.uri, source: source).isEmpty
+    }
+
+    /// Tooltip for the held panel's Remove: what the press will delete from.
+    func heldRemoveHelp(_ held: HeldTrack) -> String {
+        guard let source = heldSourceContext(held) else { return "Remove" }
+        return CurationLogic.removeHelp(targets: removalTargets(for: held.snapshot.uri, source: source))
     }
 
     func heldRemoveDisabledReason(_ held: HeldTrack) -> String? {
         if !isAuthorized { return "Log in to remove songs." }
         if !held.snapshot.kind.isCuratable { return reasonForNonTrack(held.snapshot.kind, verb: "remove") }
         guard let source = heldSourceContext(held) else { return "Confirming this track's playlist…" }
-        if source.playlistId == nil { return "Not playing from a playlist — nothing to remove from." }
-        if !source.isEditablePlaylist { return "You can't edit “\(source.playlistName ?? "this playlist")”." }
-        return nil
+        return removeDisabledReason(uri: held.snapshot.uri, source: source)
+    }
+
+    /// An editable playlist source whose confirmation is for a different track. Remove must
+    /// wait rather than fall back to a discovery-only removal — one press owes both legs.
+    private func staleEditableSource(_ source: SourceContext, for uri: String) -> Bool {
+        source.isEditablePlaylist && source.playlistId != nil && source.trackURI != uri
     }
 
     var isAuthorized: Bool { auth.isAuthorized }
@@ -408,7 +448,8 @@ final class AppModel: ObservableObject {
         async let playlists: Void = loadPlaylists()
         async let sourceRefresh: Void = refreshSource()
         async let membership: Void = loadTargetMembership(force: true)
-        _ = await (playlists, sourceRefresh, membership)
+        async let discoveryMembership: Void = loadDiscoveryPlaylistMembership(force: true)
+        _ = await (playlists, sourceRefresh, membership, discoveryMembership)
     }
 
     func loadPlaylists() async {
@@ -490,18 +531,99 @@ final class AppModel: ObservableObject {
         } else if !force, !targetMembership.isEmpty {
             return
         }
+        // The target can change while this is in flight; publishing then would attribute one
+        // playlist's contents to another.
+        guard let uris = await fetchMembership(playlistId: target),
+              settings.targetPlaylistId == target else { return }
+        targetMembership = uris
+        membershipTargetId = target
+        history.setMembership(targetId: target, uris: uris)
+    }
+
+    /// One full read of a playlist's URIs, or nil when it couldn't be had — or when a local
+    /// Add/Remove landed while it was in flight (`membershipGen`), in which case the read is
+    /// already wrong about at least one song and the caller keeps what it has.
+    ///
+    /// Nil keeps the seed. An unknown answer must read as "not added" — never as added, which
+    /// with a disabled Add button would leave no way to add the song at all.
+    private func fetchMembership(playlistId: String) async -> Set<String>? {
+        let gen = membershipGen
         do {
-            let uris = try await api.playlistTrackURIs(id: target)
-            // The target can change while this is in flight; publishing then would attribute one
-            // playlist's contents to another.
-            guard settings.targetPlaylistId == target else { return }
-            targetMembership = uris
-            membershipTargetId = target
-            history.setMembership(targetId: target, uris: uris)
+            let uris = try await api.playlistTrackURIs(id: playlistId)
+            guard membershipGen == gen else {
+                DebugLog.log("membership read of \(playlistId) discarded: edited while in flight")
+                return nil
+            }
+            return uris
         } catch {
-            // Keep the seed. An unknown answer must read as "not added" — never as added, which
-            // with a disabled Add button would leave no way to add the song at all.
+            DebugLog.log("membership read of \(playlistId) failed: \(error.localizedDescription)")
+            return nil
         }
+    }
+
+    private func loadDiscoveryPlaylistMembership(force: Bool) async {
+        guard let playlistId = settings.discoveryPlaylistId else {
+            discoveryPlaylistMembership = []
+            membershipDiscoveryPlaylistId = nil
+            discoveryMembershipLoadedAt = nil
+            return
+        }
+        if membershipDiscoveryPlaylistId != playlistId {
+            discoveryPlaylistMembership = history.cachedMembership(targetId: playlistId) ?? []
+            membershipDiscoveryPlaylistId = playlistId
+            discoveryMembershipLoadedAt = nil
+        } else if !force, !discoveryPlaylistMembership.isEmpty {
+            return
+        }
+        // Same playlist as the Add target and that set is fresh: copy it rather than walk the
+        // playlist a second time.
+        if playlistId == membershipTargetId, playlistId == settings.targetPlaylistId, !targetMembership.isEmpty, !force {
+            discoveryPlaylistMembership = targetMembership
+            discoveryMembershipLoadedAt = Date()
+            return
+        }
+        guard let uris = await fetchMembership(playlistId: playlistId),
+              settings.discoveryPlaylistId == playlistId else { return }
+        discoveryPlaylistMembership = uris
+        membershipDiscoveryPlaylistId = playlistId
+        discoveryMembershipLoadedAt = Date()
+        history.setMembership(targetId: playlistId, uris: uris)
+        DebugLog.log("discovery playlist membership: \(uris.count) uris in \(playlistId)")
+    }
+
+    /// Re-read the discovery playlist when the panel opens and the set is old. The playlist
+    /// gains songs from outside this app (the release radar, Spotify itself), and a disabled
+    /// Remove suppresses its own tooltip, so the panel click is the cheap moment to catch up.
+    /// Shorter window when the current song plays from no playlist and isn't in the set — that
+    /// is exactly the case where a stale read is what's greying the button out.
+    func refreshDiscoveryMembershipIfStale() async {
+        guard isAuthorized, let playlistId = settings.discoveryPlaylistId else { return }
+        let age = discoveryMembershipLoadedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        var window: TimeInterval = 5 * 60
+        if let np = nowPlaying, source.playlistId == nil, !discoveryPlaylistMembership.contains(np.uri) {
+            window = 30
+        }
+        guard membershipDiscoveryPlaylistId != playlistId || discoveryPlaylistMembership.isEmpty || age > window
+        else { return }
+        await loadDiscoveryPlaylistMembership(force: true)
+    }
+
+    /// Forget `uri` in whichever membership sets describe `playlistId` — disk always, memory
+    /// only when the in-memory set is actually this playlist's. Mutating a set loaded for a
+    /// different playlist would edit the wrong playlist's view of itself.
+    private func noteRemoved(uri: String, from playlistId: String) {
+        membershipGen += 1
+        history.removeFromMembership(targetId: playlistId, uri: uri)
+        if membershipTargetId == playlistId { targetMembership.remove(uri) }
+        if membershipDiscoveryPlaylistId == playlistId { discoveryPlaylistMembership.remove(uri) }
+    }
+
+    /// The Add counterpart of `noteRemoved`.
+    private func noteAdded(uri: String, to playlistId: String) {
+        membershipGen += 1
+        history.addToMembership(targetId: playlistId, uri: uri)
+        if membershipTargetId == playlistId { targetMembership.insert(uri) }
+        if membershipDiscoveryPlaylistId == playlistId { discoveryPlaylistMembership.insert(uri) }
     }
 
     /// Whether the Add button should wear its "already in the target" face for this track.
@@ -530,12 +652,40 @@ final class AppModel: ObservableObject {
         return targetIsValid && !isBusy
     }
 
-    var canRemoveFromSource: Bool {
-        guard isAuthorized, let np = nowPlaying, np.kind.isCuratable else { return false }
-        // Require the source to be resolved for the playing track — guards the brief window
+    /// What a Remove press on `uri` deletes from — see `CurationLogic.removalTargets`.
+    private func removalTargets(for uri: String, source: SourceContext) -> [RemovalTarget] {
+        CurationLogic.removalTargets(uri: uri,
+                                     source: source,
+                                     discoveryPlaylistId: settings.discoveryPlaylistId,
+                                     discoveryPlaylistName: settings.discoveryPlaylistName,
+                                     membershipLoadedFor: membershipDiscoveryPlaylistId,
+                                     membership: discoveryPlaylistMembership)
+    }
+
+    /// Whether the source lookup for the playing track is settled enough to act on.
+    ///
+    /// A playlist context is settled as soon as it's resolved. A *no-playlist* context is only
+    /// trusted once the tick's retries are spent: `/me/player` briefly reports no context for a
+    /// track that really is in a playlist (the transient those retries exist for), and acting on
+    /// that would remove from the discovery playlist alone when one press owed both legs. The
+    /// cost is a few seconds of "Confirming…" after an album or Liked Songs track starts.
+    private func sourceSettled(for np: NowPlaying) -> Bool {
+        guard source.resolvedForURI == np.uri else { return false }
+        return source.playlistId != nil || sourceResolveTries >= maxSourceResolveTries
+    }
+
+    var canRemove: Bool {
+        guard isAuthorized, let np = nowPlaying, np.kind.isCuratable, !isBusy else { return false }
+        // Require the source to be settled for the playing track — guards the brief window
         // after a track change where `source` still describes the previous track.
-        return source.isEditablePlaylist && source.playlistId != nil
-            && source.trackURI == np.uri && !isBusy
+        guard sourceSettled(for: np), !staleEditableSource(source, for: np.uri) else { return false }
+        return !removalTargets(for: np.uri, source: source).isEmpty
+    }
+
+    /// Tooltip for an enabled Remove: what the press will delete from.
+    var removeHelp: String {
+        guard let np = nowPlaying else { return "Remove" }
+        return CurationLogic.removeHelp(targets: removalTargets(for: np.uri, source: source))
     }
 
     var addDisabledReason: String? {
@@ -551,10 +701,22 @@ final class AppModel: ObservableObject {
         if !isAuthorized { return "Log in to remove songs." }
         guard let np = nowPlaying else { return "Nothing playing." }
         if !np.kind.isCuratable { return reasonForNonTrack(np.kind, verb: "remove") }
-        if source.playlistId == nil { return "Not playing from a playlist — nothing to remove from." }
-        if !source.isEditablePlaylist { return "You can't edit “\(source.playlistName ?? "this playlist")”." }
-        if source.trackURI != np.uri { return "Confirming this track's playlist…" }
-        return nil
+        if !sourceSettled(for: np) { return "Confirming this track's playlist…" }
+        return removeDisabledReason(uri: np.uri, source: source)
+    }
+
+    /// The part of the Remove tooltip shared by the normal and held panels, once the context
+    /// is known to be resolved for `uri`. Nil when the press would do something.
+    private func removeDisabledReason(uri: String, source: SourceContext) -> String? {
+        if staleEditableSource(source, for: uri) { return "Confirming this track's playlist…" }
+        if !removalTargets(for: uri, source: source).isEmpty { return nil }
+        if source.playlistId != nil, !source.isEditablePlaylist, settings.discoveryPlaylistId == nil {
+            return "You can't edit “\(source.playlistName ?? "this playlist")”."
+        }
+        if let discoveryName = settings.discoveryPlaylistName {
+            return "Not in \(discoveryName) or a playlist you can edit — nothing to remove from."
+        }
+        return "Not playing from a playlist — nothing to remove from."
     }
 
     private func reasonForNonTrack(_ kind: TrackKind, verb: String) -> String {
@@ -627,6 +789,9 @@ final class AppModel: ObservableObject {
         source = .none
         targetMembership = []
         membershipTargetId = nil
+        discoveryPlaylistMembership = []
+        membershipDiscoveryPlaylistId = nil
+        discoveryMembershipLoadedAt = nil
         lastSourceId = nil
         discovery.reset()
         clearEpisodes = .idle    // never leave another account's episode count on screen
@@ -640,6 +805,20 @@ final class AppModel: ObservableObject {
         settings.targetPlaylistName = playlist.name
         DebugLog.log("target set: \"\(playlist.name)\" id=\(playlist.id) owner=\(playlist.ownerId) collab=\(playlist.collaborative)")
         Task { await loadTargetMembership(force: true) }
+    }
+
+    func setDiscoveryPlaylist(_ playlist: Playlist) {
+        settings.discoveryPlaylistId = playlist.id
+        settings.discoveryPlaylistName = playlist.name
+        DebugLog.log("discovery playlist set: \"\(playlist.name)\" id=\(playlist.id) owner=\(playlist.ownerId) collab=\(playlist.collaborative)")
+        Task { await loadDiscoveryPlaylistMembership(force: true) }
+    }
+
+    func clearDiscoveryPlaylist() {
+        settings.discoveryPlaylistId = nil
+        settings.discoveryPlaylistName = nil
+        DebugLog.log("discovery playlist cleared")
+        Task { await loadDiscoveryPlaylistMembership(force: true) }   // drops the set
     }
 
     // MARK: New releases
@@ -757,12 +936,14 @@ final class AppModel: ObservableObject {
     }
 
     func removeCurrentFromSource() {
-        guard let np = nowPlaying, source.isEditablePlaylist, source.playlistId != nil else { return }
+        // `canRemove` is the whole gate: a song playing from an album can be removable (from
+        // the discovery playlist) with no editable source at all.
+        guard canRemove, let np = nowPlaying else { return }
         let sourceCtx = source
         let intent = UserRemovalIntent("Remove button")
         discovery.noteManualReview(uri: np.uri, sourceId: sourceCtx.playlistId)
         Task {
-            let ok = await performRemoveFromSource(uri: np.uri, sourceCtx: sourceCtx, intent: intent)
+            let ok = await performRemove(uri: np.uri, sourceCtx: sourceCtx, intent: intent)
             if ok, settings.skipToNextAfterRemove { next() }
         }
     }
@@ -773,7 +954,7 @@ final class AppModel: ObservableObject {
 
     func heldRemove() {
         let intent = UserRemovalIntent("held-panel Remove button")
-        resolveHeld { await self.performRemoveFromSource(uri: $0, sourceCtx: $1, intent: intent) }
+        resolveHeld { await self.performRemove(uri: $0, sourceCtx: $1, intent: intent) }
     }
 
     func heldSkip() { resolveHeld() }
@@ -813,8 +994,7 @@ final class AppModel: ObservableObject {
                 setStatus("Already in \(targetName)")
             } else {
                 try await provider.addTrack(uri: uri, toPlaylist: target)
-                targetMembership.insert(uri)
-                history.addToMembership(targetId: target, uri: uri)
+                noteAdded(uri: uri, to: target)
                 setStatus("Added to \(targetName)")
             }
         } catch {
@@ -856,42 +1036,58 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    /// Returns true when the track was removed from the source playlist.
+    /// Returns true when the track was removed from at least one playlist (the source it's
+    /// playing from, the discovery playlist, or both — see `CurationLogic.removalTargets`).
     /// `intent` is the user gesture that authorized this — see `UserRemovalIntent`.
     ///
-    /// A press that would take more than one row doesn't delete: it arms
+    /// A press that would take more than one row anywhere doesn't delete: it arms
     /// `pendingDuplicateRemoval` and returns false, and the second press (`confirmDuplicateRemoval`)
     /// is what reaches `commitRemove`.
     @discardableResult
-    private func performRemoveFromSource(uri: String, sourceCtx: SourceContext,
-                                         intent: UserRemovalIntent) async -> Bool {
-        guard sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId else { return false }
-        // Only remove when the source context was resolved for THIS exact track. If the
-        // source is stale (just changed track, or a missed-preempt hold), refuse rather
-        // than delete the wrong track from the wrong playlist.
-        guard DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
-                                                 targetPlaylistId: settings.targetPlaylistId,
-                                                 sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: false) else {
+    private func performRemove(uri: String, sourceCtx: SourceContext,
+                               intent: UserRemovalIntent) async -> Bool {
+        // Only remove from the source when it was resolved for THIS exact track. If the
+        // source is stale (just changed track, or a missed-preempt hold), refuse the whole
+        // press rather than delete the wrong track from the wrong playlist — or quietly do
+        // only the discovery leg of a press that owed two.
+        if sourceCtx.isEditablePlaylist, let src = sourceCtx.playlistId,
+           !DiscoveryLogic.mayRemoveFromSource(sourcePlaylistId: src,
+                                               targetPlaylistId: settings.targetPlaylistId,
+                                               sourceTrackURI: sourceCtx.trackURI, actedURI: uri, isMove: false) {
             setStatus("Couldn't confirm this track's playlist — try again.", isError: true)
             return false
         }
-        // Held for the count *and* the delete: `occurrenceCount` and `commitRemove` deliberately
+        let targets = removalTargets(for: uri, source: sourceCtx)
+        guard !targets.isEmpty else { return false }
+        // Held for the counts *and* the delete: `occurrenceCount` and `commitRemove` deliberately
         // don't touch `isBusy` themselves, so it's raised once per action rather than flickering
-        // off between two network calls of the same press.
+        // off between network calls of the same press.
         isBusy = true
         defer { isBusy = false }
-        if settings.warnOnDuplicateRemoval,
-           let count = await occurrenceCount(of: uri, inPlaylist: src), count > 1 {
-            pendingRemovalWork = (uri: uri, playlistId: src,
-                                  playlistName: sourceCtx.playlistName ?? "playlist")
-            pendingDuplicateRemoval = PendingDuplicateRemoval(trackName: trackName(forURI: uri),
-                                                             playlistName: sourceCtx.playlistName ?? "this playlist",
-                                                             count: count)
-            DebugLog.log("REMOVE held for confirmation [\(intent.gesture)] \(uri): \(count) copies in playlist \(src)")
-            return false
+        if settings.warnOnDuplicateRemoval {
+            // Each count is a full read of its playlist; run them side by side so a two-playlist
+            // press doesn't take twice as long.
+            let counts: [Int?] = await withTaskGroup(of: (Int, Int?).self) { group in
+                for (i, t) in targets.enumerated() {
+                    group.addTask { await (i, self.occurrenceCount(of: uri, inPlaylist: t.playlistId)) }
+                }
+                var out = [Int?](repeating: nil, count: targets.count)
+                for await (i, count) in group { out[i] = count }
+                return out
+            }
+            let entries = zip(targets, counts).map {
+                PendingDuplicateRemoval.Entry(playlistName: $0.playlistName, count: max($1 ?? 1, 1))
+            }
+            if entries.contains(where: { $0.count > 1 }) {
+                pendingRemovalWork = (uri: uri, targets: targets)
+                pendingDuplicateRemoval = PendingDuplicateRemoval(trackName: trackName(forURI: uri),
+                                                                 entries: entries)
+                let detail = zip(targets, entries).map { "\($1.count) in \($0.playlistId)" }.joined(separator: ", ")
+                DebugLog.log("REMOVE held for confirmation [\(intent.gesture)] \(uri): \(detail)")
+                return false
+            }
         }
-        return await commitRemove(uri: uri, playlistId: src,
-                                  playlistName: sourceCtx.playlistName ?? "playlist", intent: intent)
+        return await commitRemove(uri: uri, targets: targets, intent: intent)
     }
 
     /// The rows `uri` occupies in the playlist, or nil when that couldn't be established.
@@ -918,8 +1114,7 @@ final class AppModel: ObservableObject {
         Task {
             isBusy = true
             defer { isBusy = false }
-            let ok = await commitRemove(uri: work.uri, playlistId: work.playlistId,
-                                        playlistName: work.playlistName, intent: intent)
+            let ok = await commitRemove(uri: work.uri, targets: work.targets, intent: intent)
             if ok, settings.skipToNextAfterRemove, nowPlaying?.uri == work.uri { next() }
         }
     }
@@ -936,29 +1131,28 @@ final class AppModel: ObservableObject {
         pendingDuplicateRemoval = nil
     }
 
-    /// The deletion itself, past every guard. Split out so the confirmed path and the
-    /// single-row path share one body — a second copy is how the two would drift.
-    /// Callers own `isBusy`.
-    private func commitRemove(uri: String, playlistId: String, playlistName: String,
+    /// The deletion itself, past every guard — one call per playlist in `targets`. Split out so
+    /// the confirmed path and the single-row path share one body — a second copy is how the two
+    /// would drift. Callers own `isBusy`. Returns true when at least one playlist let go of the
+    /// song, so a skip-after-remove still follows a press that half succeeded.
+    private func commitRemove(uri: String, targets: [RemovalTarget],
                               intent: UserRemovalIntent) async -> Bool {
-        do {
-            try await provider.removeTrack(uri: uri, fromPlaylist: playlistId, intent: intent)
-            // If that playlist *was* the target, the duplicate-detection cache must forget the
-            // track — otherwise it still reads as "already in target" and auto-skip keeps
-            // skipping a song that is no longer there.
-            if playlistId == settings.targetPlaylistId {
-                // Disk always; memory only when the in-memory set is actually this playlist's.
-                // Mutating a set loaded for a different target would edit the wrong playlist's
-                // view of itself.
-                history.removeFromMembership(targetId: playlistId, uri: uri)
-                if membershipTargetId == playlistId { targetMembership.remove(uri) }
+        var succeeded: [String] = []
+        var failed: [(playlistName: String, error: String)] = []
+        for target in targets {
+            do {
+                try await provider.removeTrack(uri: uri, fromPlaylist: target.playlistId, intent: intent)
+                // The membership caches must forget the track — otherwise it still reads as
+                // "already in target" (and auto-skip keeps skipping a song that is no longer
+                // there), or Remove stays lit for a song the discovery playlist already lost.
+                noteRemoved(uri: uri, from: target.playlistId)
+                succeeded.append(target.playlistName)
+            } catch {
+                failed.append((target.playlistName, error.localizedDescription))
             }
-            setStatus("Removed from \(playlistName)")
-            return true
-        } catch {
-            setStatus("Remove failed: \(error.localizedDescription)", isError: true)
-            return false
         }
+        setStatus(CurationLogic.removedStatus(succeeded: succeeded, failed: failed), isError: !failed.isEmpty)
+        return !succeeded.isEmpty
     }
 
     /// The display name for a URI, for the confirmation prompt. Nil when neither the live track
