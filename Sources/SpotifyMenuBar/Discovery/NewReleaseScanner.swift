@@ -28,6 +28,11 @@ final class NewReleaseScanner: ObservableObject {
 
     var isRunning: Bool { if case .running = state { return true }; return false }
 
+    /// Fired when a sweep has put tracks in the playlist — at the end of a completed run, and
+    /// at an interruption if anything landed before it. Never for a zero. The scanner stays
+    /// free of UserNotifications; `AppModel` decides what to do with it.
+    var onTracksAdded: ((_ added: Int, _ artists: Int, _ playlistId: String) -> Void)?
+
     /// Minimum seconds between requests, giving ~2 req/s.
     ///
     /// The probe sustained 3.6 req/s over 60 requests without a 429, but a full sweep is a
@@ -221,6 +226,9 @@ final class NewReleaseScanner: ObservableObject {
                 store.pauseScan(atArtistId: artist.id, summary: summary)
                 lastSummary = summary
                 DebugLog.log("new-releases: \(summary)")
+                // Whatever landed before the interruption is in the playlist now; the resumed
+                // run reports only its own additions, so this is the one chance to say so.
+                if added > 0 { onTracksAdded?(added, contributingArtists, playlistId) }
                 return fail(summary)
             }
             done += 1
@@ -232,6 +240,7 @@ final class NewReleaseScanner: ObservableObject {
         lastScanAt = now
         state = .idle
         DebugLog.log("new-releases: scan complete — \(summary) (\(total) artists)")
+        if added > 0 { onTracksAdded?(added, contributingArtists, playlistId) }
     }
 
     /// One artist's sweep: what to add, and the cache keys for every album it settled.

@@ -1,6 +1,25 @@
 import Foundation
 import ServiceManagement
 
+/// One period's Top Tracks configuration. Lenient on decode so a field added later can't
+/// make an older blob unreadable (which would silently switch every period off).
+struct TopTracksPeriodSettings: Codable, Equatable {
+    var enabled = false
+    var playlistId: String?
+    var playlistName: String?
+    var mode: TopTracksSyncMode = .append
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        playlistId = try c.decodeIfPresent(String.self, forKey: .playlistId)
+        playlistName = try c.decodeIfPresent(String.self, forKey: .playlistName)
+        mode = try c.decodeIfPresent(TopTracksSyncMode.self, forKey: .mode) ?? .append
+    }
+}
+
 /// User preferences, persisted in UserDefaults.
 @MainActor
 final class Settings: ObservableObject {
@@ -50,6 +69,9 @@ final class Settings: ObservableObject {
     @Published var newReleasesExcludeCompilations: Bool { didSet { d.set(newReleasesExcludeCompilations, forKey: K.nrNoComps) } }
     @Published var newReleasesLookbackDays: Int { didSet { d.set(newReleasesLookbackDays, forKey: K.nrLookback) } }
 
+    /// Post a macOS notification when a daily sweep adds tracks.
+    @Published var newReleasesNotify: Bool { didSet { d.set(newReleasesNotify, forKey: K.nrNotify) } }
+
     /// The filter set as the scanner's pure logic wants it.
     var newReleaseFilters: NewReleaseFilters {
         NewReleaseFilters(includeFeatures: newReleasesIncludeFeatures,
@@ -57,6 +79,34 @@ final class Settings: ObservableObject {
                           excludeRemixes: newReleasesExcludeRemixes,
                           excludeCompilations: newReleasesExcludeCompilations,
                           lookbackDays: newReleasesLookbackDays)
+    }
+
+    // MARK: Top tracks (last.fm)
+    @Published var topTracksLastFMUser: String { didSet { d.set(topTracksLastFMUser, forKey: K.ttUser) } }
+    /// 50 or 100 — see `TopTracksLogic.allowedLimits`.
+    @Published var topTracksLimit: Int { didSet { d.set(topTracksLimit, forKey: K.ttLimit) } }
+    /// Per-period configuration, keyed by `TopTracksPeriod.rawValue`.
+    ///
+    /// One JSON blob rather than twelve scalar keys — a deliberate departure from the rest of
+    /// this file. The three periods are edited through one property, so the Settings bindings
+    /// and the Combine wiring in `AppModel` have one thing to watch instead of a dozen.
+    @Published var topTracksPeriods: [String: TopTracksPeriodSettings] {
+        didSet { d.set(try? JSONEncoder().encode(topTracksPeriods), forKey: K.ttPeriods) }
+    }
+    /// The one-time "Replace rewrites the playlist" confirmation has been seen.
+    @Published var topTracksReplaceAcknowledged: Bool {
+        didSet { d.set(topTracksReplaceAcknowledged, forKey: K.ttReplaceAck) }
+    }
+
+    func topTracks(_ period: TopTracksPeriod) -> TopTracksPeriodSettings {
+        topTracksPeriods[period.rawValue] ?? TopTracksPeriodSettings()
+    }
+
+    func updateTopTracks(_ period: TopTracksPeriod, _ mutate: (inout TopTracksPeriodSettings) -> Void) {
+        var updated = topTracks(period)
+        mutate(&updated)
+        guard updated != topTracks(period) else { return }
+        topTracksPeriods[period.rawValue] = updated
     }
 
     // MARK: System
@@ -113,6 +163,13 @@ final class Settings: ObservableObject {
         newReleasesExcludeCompilations = bool(K.nrNoComps, default: true)
         let storedLookback = defaults.integer(forKey: K.nrLookback)
         newReleasesLookbackDays = storedLookback > 0 ? storedLookback : 14
+        newReleasesNotify = bool(K.nrNotify, default: false)
+
+        topTracksLastFMUser = defaults.string(forKey: K.ttUser) ?? ""
+        topTracksLimit = TopTracksLogic.clampedLimit(defaults.integer(forKey: K.ttLimit))
+        topTracksPeriods = defaults.data(forKey: K.ttPeriods)
+            .flatMap { try? JSONDecoder().decode([String: TopTracksPeriodSettings].self, from: $0) } ?? [:]
+        topTracksReplaceAcknowledged = bool(K.ttReplaceAck, default: false)
 
         launchAtLogin = bool(K.launchAtLogin, default: true)
 
@@ -202,6 +259,11 @@ final class Settings: ObservableObject {
         static let nrNoRemixes = "newReleasesExcludeRemixes"
         static let nrNoComps = "newReleasesExcludeCompilations"
         static let nrLookback = "newReleasesLookbackDays"
+        static let nrNotify = "newReleasesNotifyOnAdd"
+        static let ttUser = "topTracksLastFMUser"
+        static let ttLimit = "topTracksLimit"
+        static let ttPeriods = "topTracksPeriods"
+        static let ttReplaceAck = "topTracksReplaceAcknowledged"
         static let launchAtLogin = "launchAtLogin"
         /// Bundle path of the login item we registered, so we can spot a moved build.
         static let registeredBundlePath = "registeredLoginItemBundlePath"

@@ -35,6 +35,10 @@
 	<key>SpotifyClientID</key>
 	<string>$(SPOTIFY_CLIENT_ID)</string>
 
+	<!-- last.fm API key for Top Tracks, injected from Secrets.xcconfig. Optional. -->
+	<key>LastFMAPIKey</key>
+	<string>$(LASTFM_API_KEY)</string>
+
 	<!-- Custom URL scheme for the OAuth (PKCE) redirect: spotifymenubar://callback -->
 	<key>CFBundleURLTypes</key>
 	<array>

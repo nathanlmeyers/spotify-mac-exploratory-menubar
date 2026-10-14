@@ -27,8 +27,12 @@ See `android/README.md`.
 
 ## More toolkit features
 The app is a home for Spotify features Spotify doesn't ship. Shipped so far: Discovery
-mode, New From Followed, Clear Your Episodes, Artists to Follow. Candidates:
-- Notify on a new find, and a per-artist mute list for the release radar.
+mode, New From Followed, Clear Your Episodes, Artists to Follow, Top Tracks (last.fm). Candidates:
+- A per-artist mute list for the release radar (notifications on a new find shipped).
+- Top Tracks: a YouTube playlist sync alongside the Spotify one (YouTube Data API, a
+  Google OAuth client, and a 10k-unit/day quota where each playlist insert costs 50).
+- Top Tracks: Spotify's own `/me/top/tracks` as a zero-config source for people without
+  last.fm (exact ids, no matching, but capped at 50 and "long term" is ~1 year, not all time).
 - Bulk playlist dedupe.
 - "What playlist is this song in?" across your library.
 

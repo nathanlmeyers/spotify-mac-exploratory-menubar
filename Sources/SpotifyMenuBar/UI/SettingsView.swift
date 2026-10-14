@@ -17,6 +17,7 @@ struct SettingsView: View {
             if showAdvanced {
                 curationAdvancedSection
                 newReleasesSection
+                topTracksSection
                 suggestedArtistsSection
                 librarySection
                 menuBarSection
@@ -30,6 +31,28 @@ struct SettingsView: View {
         // set here and `AppDelegate.openSettings` lets the window follow it.
         .frame(width: 460, height: showAdvanced ? 640 : 360)
         .animation(.default, value: showAdvanced)
+        .confirmationDialog(replaceDialogTitle, isPresented: replaceDialogShown, titleVisibility: .visible) {
+            Button("Use Replace") {
+                if let period = pendingReplacePeriod { model.setTopTracksMode(.replace, for: period) }
+                pendingReplacePeriod = nil
+            }
+            Button("Keep Append", role: .cancel) { pendingReplacePeriod = nil }
+        } message: {
+            Text("Replace rewrites the playlist every day to mirror your top songs and removes anything else in it — including songs you added by hand. Only this playlist, which the app created, is ever affected. Append never removes anything.")
+        }
+    }
+
+    /// Which period is waiting on the one-time Replace confirmation.
+    @State private var pendingReplacePeriod: TopTracksPeriod?
+
+    private var replaceDialogShown: Binding<Bool> {
+        Binding(get: { pendingReplacePeriod != nil },
+                set: { if !$0 { pendingReplacePeriod = nil } })
+    }
+
+    private var replaceDialogTitle: String {
+        let name = pendingReplacePeriod.flatMap { settings.topTracks($0).playlistName } ?? "this playlist"
+        return "Switch “\(name)” to Replace?"
     }
 
     // MARK: Advanced
@@ -184,11 +207,150 @@ struct SettingsView: View {
                     destinationControls
                     filterControls
                     scanControls
+                    Toggle("Notify me when it adds tracks", isOn: $settings.newReleasesNotify)
+                        .help("A macOS notification after each sweep that found something. Click it to open the playlist.")
+                    if settings.newReleasesNotify, model.notifier.authorization == .denied {
+                        caption("Notifications are turned off for Spotify Menu Bar in System Settings ▸ Notifications.")
+                    }
                 }
             }
         } header: {
             Text("New releases")
         }
+    }
+
+    // MARK: Top tracks (last.fm)
+
+    /// Three playlists mirroring the user's most played songs on last.fm, one per period.
+    @ViewBuilder private var topTracksSection: some View {
+        Section {
+            caption("Keeps a playlist of your most played songs — all time, the last 6 months, the last 30 days — from your last.fm scrobbles, once a day while the app is running.")
+
+            if !model.topTracks.hasLastFMKey {
+                caption("No last.fm API key found. Add `LASTFM_API_KEY` to `Secrets.xcconfig` and rebuild (see README).")
+            } else if !model.isAuthorized {
+                caption("Log in to Spotify to use this.")
+            } else {
+                TextField("last.fm username", text: $settings.topTracksLastFMUser)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(model.topTracks.isRunning)
+
+                Picker("Playlist length", selection: $settings.topTracksLimit) {
+                    ForEach(TopTracksLogic.allowedLimits, id: \.self) { Text("\($0) songs").tag($0) }
+                }
+                .disabled(model.topTracks.isRunning)
+
+                ForEach(TopTracksPeriod.allCases) { period in
+                    Divider()
+                    periodControls(period)
+                }
+
+                Divider()
+                topTracksStatus
+            }
+        } header: {
+            Text("Top tracks (last.fm)")
+        }
+    }
+
+    @ViewBuilder private func periodControls(_ period: TopTracksPeriod) -> some View {
+        let config = settings.topTracks(period)
+        Toggle(period.label, isOn: topTracksEnabledBinding(period))
+
+        if config.enabled {
+            // Locked while a sync runs for the same reason the radar's picker is.
+            Picker("Add to", selection: topTracksTargetBinding(period)) {
+                Text("None").tag("")
+                ForEach(model.editablePlaylists) { p in Text(p.name).tag(p.id) }
+            }
+            .disabled(model.topTracks.isRunning)
+
+            let owned = model.topTracksTargetIsOwned(period)
+            HStack {
+                caption(config.playlistName.map { "Adding to: \($0)" + (owned ? " (created by this app)" : "") }
+                        ?? "Pick a playlist, or let the app make one for you.")
+                Spacer()
+                Button("Create “\(period.defaultPlaylistName)”") { model.createTopTracksPlaylist(for: period) }
+                    .controlSize(.small)
+                    .disabled(model.isBusy || model.topTracks.isRunning)
+            }
+
+            if config.playlistId != nil {
+                Picker("Mode", selection: topTracksModeBinding(period)) {
+                    ForEach(TopTracksSyncMode.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!owned || model.topTracks.isRunning)
+                caption(owned
+                        ? "Append only adds. Replace rewrites the playlist to mirror your top \(settings.topTracksLimit) in order, removing anything else."
+                        : "Replace is only available on a playlist this app created for this period — press Create. Append never removes anything.")
+            }
+
+            if let status = model.topTracks.status[period], let summary = status.lastSummary {
+                caption(summary + (status.lastSyncAt.map { " — \(relative($0))" } ?? ""))
+            }
+        }
+    }
+
+    @ViewBuilder private var topTracksStatus: some View {
+        switch model.topTracks.state {
+        case .running(let message):
+            HStack {
+                ProgressView().controlSize(.small)
+                caption(message)
+            }
+        case .failed(let message):
+            Text(message).font(.caption).foregroundStyle(.red)
+            syncNowButton
+        case .idle:
+            syncNowButton
+        }
+    }
+
+    private var anyTopTracksPeriodReady: Bool {
+        TopTracksPeriod.allCases.contains { settings.topTracks($0).enabled && settings.topTracks($0).playlistId != nil }
+    }
+
+    @ViewBuilder private var syncNowButton: some View {
+        HStack {
+            Spacer()
+            Button("Sync now") { model.topTracks.syncNow() }
+                .controlSize(.small)
+                .disabled(!anyTopTracksPeriodReady || model.topTracks.isRunning
+                          || settings.topTracksLastFMUser.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private func topTracksEnabledBinding(_ period: TopTracksPeriod) -> Binding<Bool> {
+        Binding(get: { settings.topTracks(period).enabled },
+                set: { on in settings.updateTopTracks(period) { $0.enabled = on } })
+    }
+
+    private func topTracksTargetBinding(_ period: TopTracksPeriod) -> Binding<String> {
+        Binding(
+            get: { settings.topTracks(period).playlistId ?? "" },
+            set: { id in
+                if id.isEmpty { model.clearTopTracksTarget(for: period); return }
+                if let p = model.editablePlaylists.first(where: { $0.id == id }) {
+                    model.setTopTracksTarget(p, for: period)
+                }
+            }
+        )
+    }
+
+    /// Replace goes through the one-time confirmation the first time; after that the guard in
+    /// `AppModel.setTopTracksMode` is the only check, and it refuses anything we don't own.
+    private func topTracksModeBinding(_ period: TopTracksPeriod) -> Binding<TopTracksSyncMode> {
+        Binding(
+            get: { settings.topTracks(period).mode },
+            set: { mode in
+                if mode == .replace, !settings.topTracksReplaceAcknowledged {
+                    pendingReplacePeriod = period
+                } else {
+                    model.setTopTracksMode(mode, for: period)
+                }
+            }
+        )
     }
 
     // MARK: Artists to follow

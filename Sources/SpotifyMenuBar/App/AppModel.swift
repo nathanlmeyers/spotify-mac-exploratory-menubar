@@ -72,6 +72,11 @@ final class AppModel: ObservableObject {
     private let suggestedArtistStore: SuggestedArtistStore
     /// The Artists to Follow list. Exposed so its window and Settings can drive and observe it.
     let suggestions: ArtistSuggestionEngine
+    private let topTracksStore: TopTracksStore
+    /// The Top Tracks (last.fm) sync. Exposed so Settings can drive and observe it.
+    let topTracks: TopTracksSyncer
+    /// Posts the New From Followed notification and reports whether macOS allows it.
+    let notifier = ReleaseNotifier()
 
     @Published var nowPlaying: NowPlaying?
     @Published var source: SourceContext = .none
@@ -171,18 +176,57 @@ final class AppModel: ObservableObject {
         self.provider = SpotifyProvider(local: local, api: api)
         let newReleaseStore = NewReleaseStore()
         self.newReleaseStore = newReleaseStore
-        self.newReleases = NewReleaseScanner(api: api, auth: auth, settings: settings,
-                                             store: newReleaseStore)
+        let newReleases = NewReleaseScanner(api: api, auth: auth, settings: settings,
+                                            store: newReleaseStore)
+        self.newReleases = newReleases
         let suggestedArtistStore = SuggestedArtistStore()
         self.suggestedArtistStore = suggestedArtistStore
         self.suggestions = ArtistSuggestionEngine(api: api, auth: auth,
                                                   store: suggestedArtistStore)
+        let topTracksStore = TopTracksStore()
+        self.topTracksStore = topTracksStore
+        // The two daily jobs spend from one quota; the sync waits while the radar is sweeping.
+        self.topTracks = TopTracksSyncer(api: api, lastFM: LastFMClient(), auth: auth,
+                                         settings: settings, store: topTracksStore,
+                                         yieldWhile: { newReleases.isRunning })
 
         // Re-publish nested ObservableObject changes so SwiftUI views refresh.
         auth.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         newReleases.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         suggestions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        topTracks.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        notifier.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+
+        // A period pointed at a different playlist starts its per-playlist sets from scratch,
+        // for the same reason the radar does (see `NewReleaseStore.setPlaylist`).
+        settings.$topTracksPeriods.dropFirst()
+            .sink { [weak self] periods in
+                for period in TopTracksPeriod.allCases {
+                    self?.topTracksStore.setPlaylist(periods[period.rawValue]?.playlistId, for: period)
+                }
+            }
+            .store(in: &cancellables)
+        // A new length makes every list wrong by definition; sync again rather than wait a day.
+        settings.$topTracksLimit.dropFirst().removeDuplicates()
+            .sink { [weak self] _ in
+                for period in TopTracksPeriod.allCases { self?.topTracksStore.invalidateSync(for: period) }
+            }
+            .store(in: &cancellables)
+        // Ask macOS for permission at the moment the user asks for notifications, not at launch.
+        settings.$newReleasesNotify.dropFirst()
+            .sink { [weak self] enabled in
+                guard enabled, let self else { return }
+                Task { await self.notifier.requestAuthorization() }
+            }
+            .store(in: &cancellables)
+        newReleases.onTracksAdded = { [weak self] added, artists, playlistId in
+            guard let self, self.settings.newReleasesNotify else { return }
+            self.notifier.notify(title: self.settings.newReleasesPlaylistName ?? "New From Followed",
+                                 body: NewReleaseLogic.summaryLabel(added: added, artists: artists),
+                                 playlistId: playlistId)
+        }
+        notifier.onOpenPlaylist = { [weak self] id in self?.openPlaylistInSpotify(id: id) }
 
         // Switching destination playlists must not carry the per-playlist caches across, or the
         // new playlist starts out empty and stays that way.
@@ -284,8 +328,13 @@ final class AppModel: ObservableObject {
 
     // MARK: Lifecycle
 
+    /// Must run in `applicationWillFinishLaunching` so a notification click that launches the
+    /// app reaches the delegate.
+    func installNotifications() { notifier.install() }
+
     func start() {
         settings.bootstrap()
+        if settings.newReleasesNotify { notifier.refreshAuthorizationStatus() }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.tick() }
         }
@@ -314,6 +363,8 @@ final class AppModel: ObservableObject {
         // so this is safe to ask once a second; the scan itself runs detached and paces its own
         // requests rather than blocking the tick.
         newReleases.scanIfDue(now: now)
+        // Daily last.fm top-tracks sync, same shape: local checks only unless a period is due.
+        topTracks.syncIfDue(now: now)
 
         let np = await provider.refreshNowPlaying()
 
@@ -800,6 +851,76 @@ final class AppModel: ObservableObject {
                 setStatus("Couldn't create the playlist: \(error.localizedDescription)", isError: true)
             }
         }
+    }
+
+    /// Open a playlist. Prefers the desktop app; the web player is the fallback.
+    func openPlaylistInSpotify(id: String) {
+        if let appURL = URL(string: TopTracksLogic.playlistURI(id: id)),
+           NSWorkspace.shared.urlForApplication(toOpen: appURL) != nil {
+            NSWorkspace.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: TopTracksLogic.playlistWebURL(id: id)) {
+            NSWorkspace.shared.open(webURL)
+        }
+    }
+
+    // MARK: Top tracks (last.fm)
+    //
+    // Replace mode is the one place in the app where an unattended job can take songs out of a
+    // playlist. The gate is `OwnedSyncPlaylist` (minted only by `TopTracksStore`, only for a
+    // playlist `createTopTracksPlaylist` made) — not `UserRemovalIntent`, which stays exactly
+    // as narrow as it was. Picking any other playlist forces Append below.
+
+    func topTracksTargetIsOwned(_ period: TopTracksPeriod) -> Bool {
+        topTracks.targetIsOwned(period)
+    }
+
+    /// Point a period at an existing playlist. Anything not created by this feature is
+    /// append-only, so the mode is reset along with the target.
+    func setTopTracksTarget(_ playlist: Playlist, for period: TopTracksPeriod) {
+        let owned = topTracksStore.ownership(for: period, targetPlaylistId: playlist.id) != nil
+        settings.updateTopTracks(period) {
+            $0.playlistId = playlist.id
+            $0.playlistName = playlist.name
+            if !owned { $0.mode = .append }
+        }
+        DebugLog.log("top-tracks: \(period.rawValue) target set: \"\(playlist.name)\" id=\(playlist.id) owned=\(owned)")
+    }
+
+    func clearTopTracksTarget(for period: TopTracksPeriod) {
+        settings.updateTopTracks(period) {
+            $0.playlistId = nil
+            $0.playlistName = nil
+            $0.mode = .append
+        }
+    }
+
+    /// Create this period's playlist and point the period at it. Only a playlist made here can
+    /// ever be in Replace mode.
+    func createTopTracksPlaylist(for period: TopTracksPeriod) {
+        guard isAuthorized else { setStatus("Log in to Spotify first.", isError: true); return }
+        Task {
+            isBusy = true
+            defer { isBusy = false }
+            do {
+                let playlist = try await topTracks.createOwnedPlaylist(for: period)
+                setTopTracksTarget(playlist, for: period)
+                await loadPlaylists()
+                setStatus("Created “\(playlist.name)”")
+            } catch {
+                setStatus("Couldn't create the playlist: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    /// Replace is refused here as well as at the API: the picker is disabled for a playlist we
+    /// don't own, and this is the guard behind the picker.
+    func setTopTracksMode(_ mode: TopTracksSyncMode, for period: TopTracksPeriod) {
+        guard mode == .append || topTracksTargetIsOwned(period) else { return }
+        settings.updateTopTracks(period) { $0.mode = mode }
+        if mode == .replace { settings.topTracksReplaceAcknowledged = true }
+        DebugLog.log("top-tracks: \(period.rawValue) mode set to \(mode.rawValue)")
     }
 
     func addCurrentToTarget() {
