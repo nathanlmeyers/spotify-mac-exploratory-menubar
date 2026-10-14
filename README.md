@@ -11,6 +11,7 @@ background instead of only when you have a window open.
 | **Curate as you listen** | Click the icon for the current song with **Add** (to a target playlist) and **Remove** (from the playlist you're listening to), plus transport and a seek scrubber. |
 | **Discovery mode** | Holds playback just before each song ends so you can triage a new-releases playlist into keepers without it auto-advancing. |
 | **New From Followed** | Checks your followed artists once a day and collects anything they released — or were featured on — into a playlist. A free, local replacement for a paid release-radar service. |
+| **Top Tracks (last.fm)** | Keeps three playlists of your most played songs — all time, the last 6 months, the last 30 days — from your last.fm scrobbles, synced once a day. A free, local replacement for a paid listening-history sync service. |
 | **Artists to Follow** | Lists the artists you demonstrably listen to but never followed, ranked from your own top artists and top tracks, with Play / Follow / Not interested on each row. |
 | **Clear Your Episodes** | Empties Spotify's saved-podcast-episodes library, which no Spotify client offers a way to bulk-clear. |
 
@@ -22,7 +23,12 @@ Design notes:
   Keychain).
 - **Nothing is ever deleted without a button press.** Playlist and library removals require
   a `UserRemovalIntent`, which only a button handler in `AppModel` can construct — so an
-  automated deletion is a compile error, not a comment someone can read past.
+  automated deletion is a compile error, not a comment someone can read past. The one
+  exception is Top Tracks' **Replace** mode, which rewrites a playlist *the app itself
+  created* — and only that playlist: the call needs an `OwnedSyncPlaylist`, which only the
+  Top Tracks store can mint and only for an id it recorded at creation, and it re-reads the
+  playlist's description for the app's marker before every write. `UserRemovalIntent` is
+  untouched.
 
 There is also an **Android build** in [`android/`](android/README.md), which puts the same
 Add/Remove on the Pixel lock screen. It shares this repo's Spotify app registration and Client ID.
@@ -130,11 +136,56 @@ Two things worth knowing about how it works:
   switched the feature on.
 - **Switching it off stops the sweep.** If a scan is running when you turn the toggle off, it
   stops at the artist it's on rather than finishing; turning it back on picks up there.
+- **It can tell you when it found something.** *Notify me when it adds tracks* posts a macOS
+  notification after any sweep that added music; click it to open the playlist in Spotify.
+  macOS asks for permission the first time you turn it on.
 
 There's a read-only probe for the API assumptions behind all of this:
 
 ```sh
 ./scripts/probe-new-releases.py
+```
+
+## Top Tracks (last.fm)
+
+Keeps up to three playlists in step with your most played songs on last.fm — **all time**,
+**the last 6 months**, **the last 30 days** — once a day while the app is running. Each period
+has its own toggle and its own playlist, so you can run one, two or all three.
+
+Setup:
+
+1. Get a free last.fm API key at <https://www.last.fm/api/account/create> (any app name; no
+   callback URL — the app only reads public listening history, there is no login) and add it
+   to `Secrets.xcconfig` as `LASTFM_API_KEY = …`, then rebuild.
+2. In **Settings ▸ Top tracks (last.fm)** enter your last.fm username, pick a length (50 or
+   100 songs), turn on a period, and either pick a playlist or press **Create**.
+
+How it works, and the two modes:
+
+- **Matching.** last.fm knows artist and title, not Spotify ids, so every song is found with
+  one or two `GET /search` calls and scored: the title has to agree once packaging suffixes
+  (`- Remastered 2011`, `(Radio Edit)`, `(feat. …)`) are ignored, the artist has to line up,
+  and a different *recording* (`Live`, `Remix`, `Acoustic`, `Sped Up`) counts against the
+  match rather than being waved through. Anything that doesn't clear the bar is a miss — a
+  gap in the playlist beats a karaoke cover of your most played song. Matches and misses are
+  cached, so the first run is ~50–100 requests per period and every later run is a handful.
+- **Append** only ever adds, exactly like New From Followed. A song you remove by hand is not
+  re-added. Append playlists are not in rank order after the first fill, and a song that
+  falls out of your top list stays.
+- **Replace** rewrites the playlist every day to mirror your top list in order, which means
+  it removes songs — including ones you added by hand. That is why it is **only available on
+  a playlist the app created for that period** (press **Create**): picking any existing
+  playlist forces Append, two periods pointed at one playlist forces Append, and the first
+  switch to Replace asks you to confirm. If the created playlist is deleted, or its
+  description no longer carries the app's marker, Replace switches itself off and says so.
+- **It never writes an empty list,** so a run where nothing matched can't wipe a playlist.
+
+There's a read-only probe that grades the matcher against the live API, with or without a
+last.fm key:
+
+```sh
+./scripts/probe-lastfm-top-tracks.py --self-test-playlist auto   # one of your playlists as the answer key
+./scripts/probe-lastfm-top-tracks.py --user <lastfm-user> --period all
 ```
 
 ## Artists to Follow

@@ -139,7 +139,7 @@ final class SpotifyWebAPI {
     /// Uses the Feb-2026 `/items` endpoint; the nested object was renamed `track` -> `item`
     /// (we read either to stay robust). Shared by the duplicate-detection set and the
     /// occurrence count so the two can't drift on which rows they consider real.
-    private func forEachPlaylistItemURI(id: String, pace: (() async -> Void)? = nil,
+    func forEachPlaylistItemURI(id: String, pace: (() async -> Void)? = nil,
                                         _ body: (String) -> Void) async throws {
         struct Page: Decodable {
             struct Item: Decodable {

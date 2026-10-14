@@ -71,6 +71,11 @@ targets:
       # touches the real Application Support state — and its dismissal list is the only
       # user-authored state in the app with no copy anywhere else.
       - path: Sources/SpotifyMenuBar/State/SuggestedArtistStore.swift
+      # Top Tracks: the last.fm→Spotify matcher is where a wrong guess puts a karaoke cover in
+      # the playlist, and the store is where the Replace authorisation is minted — both pinned
+      # here rather than discovered in a playlist.
+      - path: Sources/SpotifyMenuBar/TopTracks/TopTracksLogic.swift
+      - path: Sources/SpotifyMenuBar/State/TopTracksStore.swift
       - path: Sources/SpotifyMenuBar/Support/DebugLog.swift
 
 schemes:
