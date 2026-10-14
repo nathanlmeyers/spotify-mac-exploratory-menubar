@@ -102,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // playback while paused), clobbering the resolved source and disabling Remove.
                 if case .held = model.reviewState {} else { await model.refreshSource() }
                 if model.isAuthorized && model.editablePlaylists.isEmpty { await model.loadPlaylists() }
+                await model.refreshDiscoveryMembershipIfStale()
             }
         }
     }
@@ -149,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil {
             let host = NSHostingController(rootView: SettingsView(settings: model.settings).environmentObject(model))
+            // The form is short until "Advanced Settings" is opened; let the window follow it.
+            host.sizingOptions = .preferredContentSize
             let window = NSWindow(contentViewController: host)
             window.title = "Spotify Menu Bar Settings"
             window.styleMask = [.titled, .closable]

@@ -8,8 +8,8 @@ background instead of only when you have a window open.
 
 | | |
 |---|---|
-| **Curate as you listen** | Click the icon for the current song with **Add** (to a target playlist) and **Remove** (from the playlist you're listening to), plus transport and a seek scrubber. |
-| **Discovery mode** | Holds playback just before each song ends so you can triage a new-releases playlist into keepers without it auto-advancing. |
+| **Curate as you listen** | Click the icon for the current song with **Add** (to a target playlist) and **Remove** (from the playlist you're listening to — and from your **discovery playlist** if you've set one, whatever the song is playing from), plus transport and a seek scrubber. |
+| **Discover mode** | Holds playback just before each song ends so you can triage a new-releases playlist into keepers without it auto-advancing. Toggle it from the panel, next to the playback controls. |
 | **New From Followed** | Checks your followed artists once a day and collects anything they released — or were featured on — into a playlist. A free, local replacement for a paid release-radar service. |
 | **Artists to Follow** | Lists the artists you demonstrably listen to but never followed, ranked from your own top artists and top tracks, with Play / Follow / Not interested on each row. |
 | **Clear Your Episodes** | Empties Spotify's saved-podcast-episodes library, which no Spotify client offers a way to bulk-clear. |
@@ -97,7 +97,7 @@ On first run:
 
 ## New From Followed
 
-Turn it on in **Settings ▸ New releases**, pick a destination (or press **Create "New From
+Turn it on in **Settings ▸ Advanced Settings ▸ New releases**, pick a destination (or press **Create "New From
 Followed"**), and it sweeps once a day while the app is running. It only ever adds.
 
 Filters: include/exclude features, main-artist-only, skip remixes, skip compilations, and
@@ -140,7 +140,7 @@ There's a read-only probe for the API assumptions behind all of this:
 ## Artists to Follow
 
 Right-click the menu-bar icon → **Artists to Follow…** (or the person-plus button in the
-panel, or **Settings ▸ Artists to follow ▸ Open…**). It lists artists you listen to but
+panel, or **Settings ▸ Advanced Settings ▸ Artists to follow ▸ Open…**). It lists artists you listen to but
 haven't followed, best first, with the evidence for each — *"#3 in your top artists (all
 time) · 5 songs in your top tracks"*.
 
@@ -161,7 +161,7 @@ Three things worth knowing:
   No Premium, no API quota.
 - **"Not interested" changes nothing on your Spotify account.** It writes an id to this app's
   own `suggestions.json` and that's all — nobody is unfollowed and nothing is deleted. It's
-  reversible: Undo in the window, or **Settings ▸ Artists to follow ▸ Hidden artists**.
+  reversible: Undo in the window, or **Settings ▸ Advanced Settings ▸ Artists to follow ▸ Hidden artists**.
 
 A refresh costs about 40 requests (six top-list reads, your followed artists, then one artist
 lookup each for artwork — the batch endpoint for that was removed too, so there's a cap of 30
@@ -185,9 +185,9 @@ exist at all:
   end, with a crossfade/slip fallback), combinable alerts (auto-open non-activating panel /
   icon pulse / sound), and auto-skip rules (already-in-target, already-reviewed) with loop
   protection.
-- **Clear Your Episodes** (Settings ▸ Library): **irreversible** — the only record of what
+- **Clear Your Episodes** (Settings ▸ Advanced Settings ▸ Library): **irreversible** — the only record of what
   was removed is the episode URIs in the debug log.
-- **New From Followed** (Settings ▸ New releases).
+- **New From Followed** (Settings ▸ Advanced Settings ▸ New releases).
 - **Artists to Follow** (right-click ▸ Artists to Follow…): its own window; reads and additive
   follows only, and "Not interested" is local.
 - **Phase 3:** notarized GitHub distribution; see `ROADMAP.md`.

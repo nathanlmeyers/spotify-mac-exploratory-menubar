@@ -70,17 +70,22 @@ final class SpotifyProvider {
     func currentSourceAndArtists() async throws -> (source: SourceContext, artists: [String], trackURI: String?, deviceIsLocal: Bool?) {
         guard let cp = try await api.currentContext() else { return (.none, [], nil, resolveLocality(nil)) }
         let deviceIsLocal = resolveLocality(cp.device)
+        // Not a playlist (album / artist / liked / queue): no source, but the lookup did run for
+        // this track, and a discovery-playlist removal needs to know that.
+        let noPlaylist = SourceContext(playlistId: nil, playlistName: nil, isEditablePlaylist: false,
+                                       trackURI: nil, resolvedForURI: cp.trackURI)
         guard cp.contextType == "playlist", let uri = cp.contextURI else {
-            return (.none, cp.artistNames, cp.trackURI, deviceIsLocal) // album / artist / liked / queue
+            return (noPlaylist, cp.artistNames, cp.trackURI, deviceIsLocal)
         }
         let id = uri.components(separatedBy: ":").last ?? ""
-        guard !id.isEmpty else { return (.none, cp.artistNames, cp.trackURI, deviceIsLocal) }
+        guard !id.isEmpty else { return (noPlaylist, cp.artistNames, cp.trackURI, deviceIsLocal) }
         let me = try await currentUserId()
         let info = try await playlistInfo(id: id)
         let source = SourceContext(playlistId: id,
                                    playlistName: info.name,
                                    isEditablePlaylist: info.isEditable(byUserId: me),
-                                   trackURI: cp.trackURI)
+                                   trackURI: cp.trackURI,
+                                   resolvedForURI: cp.trackURI)
         return (source, cp.artistNames, cp.trackURI, deviceIsLocal)
     }
 
